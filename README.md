@@ -56,6 +56,15 @@ Swagger:
 - `PUT /api/users/{user_id}/roles`
 - `DELETE /api/users/{user_id}/roles/{role_id}`
 
+### User Management (VCC Group -> VCC Plastics)
+- `GET /api/user-management/employees` - lấy nhân viên VCC Group và ghép vai trò VCC Plastics
+  - Query: `keyword`, `org_id`, `employment_status=active|inactive|all`, `assigned_only`
+- `PUT /api/user-management/employees/{employee_code}/roles` - thêm/cập nhật MES user và thay toàn bộ vai trò
+- `PATCH /api/user-management/users/{user_id}/status` - bật/tắt quyền truy cập VCC Plastics
+
+Nguồn hồ sơ nhân viên là API VCC Group `GET /employees/list`. VCC Plastics chỉ
+lưu `external_user_id`, `employee_code`, trạng thái truy cập và quan hệ vai trò.
+
 ### Roles
 - `GET /api/roles`
 - `GET /api/roles/{role_id}`

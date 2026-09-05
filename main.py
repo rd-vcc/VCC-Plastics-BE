@@ -7,6 +7,7 @@ from routers.users import router as users_router
 from routers.roles import router as roles_router
 from routers.permissions import router as permissions_router
 from routers.role_permissions import router as role_permissions_router
+from routers.user_management import router as user_management_router
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
 
@@ -27,6 +28,7 @@ app.include_router(users_router)
 app.include_router(roles_router)
 app.include_router(permissions_router)
 app.include_router(role_permissions_router)
+app.include_router(user_management_router)
 
 
 @app.get("/")
