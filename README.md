@@ -83,6 +83,40 @@ Khong co POST/PUT/DELETE Permission.
 - `PUT /api/roles/{role_id}/permissions`
 - `DELETE /api/roles/{role_id}/permissions/{permission_id}`
 
+### Product Master
+
+Product Family tree:
+
+- `GET /api/product-master/families`
+- `GET /api/product-master/families/{family_id}`
+- `POST /api/product-master/families`
+- `PUT /api/product-master/families/{family_id}`
+- `POST /api/product-master/families/{family_id}/move`
+- `PATCH /api/product-master/families/{family_id}/status`
+- `DELETE /api/product-master/families/{family_id}`
+
+Dynamic product fields:
+
+- `GET /api/product-master/fields`
+- `GET /api/product-master/fields/{field_id}`
+- `POST /api/product-master/fields`
+- `PUT /api/product-master/fields/{field_id}`
+- `DELETE /api/product-master/fields/{field_id}`
+
+Products and revisions:
+
+- `GET /api/product-master/products/kpis`
+- `GET /api/product-master/products`
+- `GET /api/product-master/products/{product_id}`
+- `POST /api/product-master/products`
+- `PUT /api/product-master/products/{product_id}`
+- `PATCH /api/product-master/products/{product_id}/status`
+- `DELETE /api/product-master/products/{product_id}` (soft delete)
+- `GET /api/product-master/products/{product_id}/versions`
+- `POST /api/product-master/products/{product_id}/versions`
+
+Chay `database/product_master_schema.sql` truoc khi su dung cac API nay.
+
 ## Login flow
 
 FE -> VCC Plastics `/api/auth/login` -> VCC Group `/api/login` -> kiem tra `mes_users` -> lay Role -> lay Permission -> tra ve FE.
