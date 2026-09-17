@@ -26,21 +26,53 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Tao database bang `database/schema.sql`, sau do seed permission co dinh:
+Database da duoc tao san tren MySQL dev (schema `vcc_plastics`). Neu can tao
+lai tu dau, xem baseline schema trong `migrations/versions/0001_baseline.py`
+(va `migrations/README.md` truoc khi dung Alembic voi database dang chay).
+Sau do seed permission co dinh:
 
 ```powershell
-python -m database.seed_permissions
+python -m scripts.seed_permissions
 ```
 
 Chay BE:
 
 ```powershell
-uvicorn main:app --reload --host 0.0.0.0 --port 5000
+uvicorn main:app --reload --host 0.0.0.0 --port 5005
 ```
 
 Swagger:
 
-`http://127.0.0.1:5000/docs`
+`http://127.0.0.1:5005/docs`
+
+## Cau truc thu muc
+
+Project theo layout modular-monolith:
+
+- `main.py` - entrypoint, composition root (tao app, CORS, middleware, router)
+- `app/core` - config, database, logging, exceptions, cac placeholder
+  security/permissions cho tuong lai
+- `app/common` - dependencies/pagination/validators/enums dung chung
+- `app/middleware` - request logging + error handler (that su chay), cong
+  voi auth/audit middleware placeholder (chua bat, chua co logic)
+- `app/modules` - moi module nghiep vu co that (auth, administration.users,
+  administration.roles, administration.permissions,
+  administration.system_settings, organization.employees,
+  master_data.factory_structure, master_data.products,
+  master_data.machines, master_data.molds) co router/schemas/service rieng
+- `app/integrations/vcc_group` - client HTTP goi API VCC Group ben ngoai
+- `app/models` - SQLAlchemy declarative base + mixin cho model tuong lai
+- `app/api` - `router.py` gom cac router that lai, `health.py` cho `/` va `/health`
+- `migrations` - Alembic (xem `migrations/README.md` truoc khi chay)
+- `tests` - pytest (`tests/api` co test cho health va auth)
+- `scripts` - `seed_permissions.py` (that), `seed_admin.py` /
+  `migrate_legacy_data.py` (placeholder, chua co spec)
+- `storage`, `logs` - thu muc rong cho upload/export/log trong tuong lai
+
+Cac module business khac (production, quality, maintenance,
+material_management, iot, traceability, dashboard, notifications, va cac
+submodule master_data/organization/administration khac) **chua duoc scaffold**
+vi chua co code that - se duoc them khi co yeu cau cu the.
 
 ## API hien tai
 
@@ -115,7 +147,8 @@ Products and revisions:
 - `GET /api/product-master/products/{product_id}/versions`
 - `POST /api/product-master/products/{product_id}/versions`
 
-Chay `database/product_master_schema.sql` truoc khi su dung cac API nay.
+Schema cho cac bang nay nam trong `migrations/versions/0001_baseline.py`
+(da ap dung san tren DB dev).
 
 ## Login flow
 
