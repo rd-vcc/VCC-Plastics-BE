@@ -18,6 +18,7 @@ from app.modules.master_data.factory_structure.router import router as factory_s
 from app.modules.master_data.products.router import router as products_router
 from app.modules.master_data.machines.router import router as machines_router
 from app.modules.master_data.molds.router import router as molds_router
+from app.modules.master_data.materials.router import router as materials_router
 
 api_router = APIRouter()
 
@@ -31,3 +32,4 @@ api_router.include_router(factory_structure_router)
 api_router.include_router(products_router)
 api_router.include_router(machines_router)
 api_router.include_router(molds_router)
+api_router.include_router(materials_router)
