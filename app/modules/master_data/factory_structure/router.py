@@ -449,6 +449,7 @@ def list_nodes(
                 n.level_no,
                 n.sort_order,
                 n.description,
+                n.image_url,
                 n.status,
                 n.created_by,
                 n.updated_by,
@@ -562,10 +563,11 @@ def create_node(payload: FactoryNodeCreate):
                 level_no,
                 sort_order,
                 description,
+                image_url,
                 status,
                 created_by
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 payload.code,
@@ -575,6 +577,7 @@ def create_node(payload: FactoryNodeCreate):
                 level_no,
                 payload.sort_order,
                 payload.description,
+                payload.image_url,
                 payload.status,
                 payload.created_by,
             ),
@@ -640,6 +643,7 @@ def update_node(
                 level_no = %s,
                 sort_order = %s,
                 description = %s,
+                image_url = %s,
                 status = %s,
                 updated_by = %s
             WHERE id = %s
@@ -651,6 +655,7 @@ def update_node(
                 level_no,
                 payload.sort_order,
                 payload.description,
+                payload.image_url,
                 payload.status,
                 payload.updated_by,
                 node_id,

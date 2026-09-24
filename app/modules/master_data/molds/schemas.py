@@ -10,9 +10,12 @@ MoldStatus = Literal[
     "IN_PRODUCTION",
     "IN_MAINTENANCE",
     "IN_REPAIR",
+    "LOCKED",
     "RETIRED",
     "SCRAPPED",
 ]
+LocationCategory = Literal["STORAGE", "MAINTENANCE", "REPAIR", "SCRAP"]
+DocType = Literal["MODEL_3D", "PART", "BOM", "COOLING_LAYOUT", "EJECTION_LAYOUT", "DRAWING", "MAINTENANCE_PLAN", "OTHER"]
 AttributeType = Literal[
     "TEXT", "LONG_TEXT", "INTEGER", "DECIMAL", "BOOLEAN",
     "DATE", "DATETIME", "SELECT", "MULTI_SELECT",
@@ -34,6 +37,7 @@ class MoldNodeTypeCreate(BaseModel):
     color: str | None = Field(default=None, max_length=20)
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = True
+    location_category: LocationCategory = "STORAGE"
     sort_order: int = 0
     created_by: str | None = Field(default=None, max_length=100)
 
@@ -55,6 +59,7 @@ class MoldNodeTypeUpdate(BaseModel):
     color: str | None = Field(default=None, max_length=20)
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = True
+    location_category: LocationCategory = "STORAGE"
     sort_order: int = 0
     updated_by: str | None = Field(default=None, max_length=100)
 
@@ -69,6 +74,7 @@ class MoldNodeCreate(BaseModel):
     node_name: str = Field(min_length=1, max_length=200)
     node_type_id: int = Field(gt=0)
     parent_id: int | None = Field(default=None, gt=0)
+    capacity: int | None = Field(default=None, ge=0)
     sort_order: int = 0
     description: str | None = Field(default=None, max_length=500)
     status: ActiveStatus = "ACTIVE"
@@ -89,6 +95,7 @@ class MoldNodeUpdate(BaseModel):
     node_name: str = Field(min_length=1, max_length=200)
     node_type_id: int = Field(gt=0)
     parent_id: int | None = Field(default=None, gt=0)
+    capacity: int | None = Field(default=None, ge=0)
     sort_order: int = 0
     description: str | None = Field(default=None, max_length=500)
     status: ActiveStatus = "ACTIVE"
@@ -156,6 +163,9 @@ class MoldCreate(BaseModel):
     image_url: str | None = Field(default=None, max_length=1000)
     description: str | None = None
     remark: str | None = None
+    revision: str | None = Field(default=None, max_length=30)
+    pm_interval_shot: int | None = Field(default=None, ge=0)
+    pm_interval_days: int | None = Field(default=None, ge=0)
     is_active: bool = True
     attribute_values: list[MoldAttributeValueInput] = Field(default_factory=list)
     products: list[MoldProductInput] = Field(default_factory=list)
@@ -190,6 +200,9 @@ class MoldUpdate(BaseModel):
     image_url: str | None = Field(default=None, max_length=1000)
     description: str | None = None
     remark: str | None = None
+    revision: str | None = Field(default=None, max_length=30)
+    pm_interval_shot: int | None = Field(default=None, ge=0)
+    pm_interval_days: int | None = Field(default=None, ge=0)
     is_active: bool = True
     attribute_values: list[MoldAttributeValueInput] = Field(default_factory=list)
     products: list[MoldProductInput] = Field(default_factory=list)
@@ -264,3 +277,12 @@ class MoldAttributeValuesReplace(BaseModel):
 class MoldProductsReplace(BaseModel):
     products: list[MoldProductInput] = Field(default_factory=list)
     updated_by: str | None = Field(default=None, max_length=100)
+
+
+class MoldDocumentCreate(BaseModel):
+    doc_type: DocType = "OTHER"
+    title: str = Field(min_length=1, max_length=255)
+    file_url: str = Field(min_length=1, max_length=1000)
+    file_name: str | None = Field(default=None, max_length=255)
+    file_size: int | None = Field(default=None, ge=0)
+    uploaded_by: str | None = Field(default=None, max_length=100)

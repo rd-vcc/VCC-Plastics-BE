@@ -163,6 +163,7 @@ class ProductCreate(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     product_family_id: int
     status: Status = "ACTIVE"
+    image_url: str | None = Field(default=None, max_length=1000)
     values: list[ProductDynamicValue] = Field(default_factory=list)
     created_by: str | None = Field(default=None, max_length=100)
 
@@ -181,6 +182,7 @@ class ProductUpdate(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     product_family_id: int
     status: Status = "ACTIVE"
+    image_url: str | None = Field(default=None, max_length=1000)
     values: list[ProductDynamicValue] = Field(default_factory=list)
     updated_by: str | None = Field(default=None, max_length=100)
 

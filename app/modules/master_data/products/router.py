@@ -622,11 +622,11 @@ def create_product(payload: ProductCreate):
             """
             INSERT INTO products (
                 product_code, product_name, product_family_id,
-                status, created_by
-            ) VALUES (%s,%s,%s,%s,%s)
+                status, image_url, created_by
+            ) VALUES (%s,%s,%s,%s,%s,%s)
             """,
             (payload.product_code, payload.product_name, payload.product_family_id,
-             payload.status, payload.created_by),
+             payload.status, payload.image_url, payload.created_by),
         )
         product_id = cur.lastrowid
         replace_product_values(cur, product_id, normalized, payload.created_by)
@@ -655,11 +655,11 @@ def update_product(product_id: int, payload: ProductUpdate):
             """
             UPDATE products
             SET product_name=%s, product_family_id=%s,
-                status=%s, updated_by=%s
+                status=%s, image_url=%s, updated_by=%s
             WHERE id=%s
             """,
             (payload.product_name, payload.product_family_id,
-             payload.status, payload.updated_by, product_id),
+             payload.status, payload.image_url, payload.updated_by, product_id),
         )
         replace_product_values(cur, product_id, normalized, payload.updated_by)
         conn.commit()

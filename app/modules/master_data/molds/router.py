@@ -7,8 +7,9 @@ from app.modules.master_data.molds.schemas import (
     MoldAttributeDefinitionCreate, MoldAttributeDefinitionUpdate,
     MoldAttributeValuesReplace, MoldCreate, MoldNodeCreate, MoldNodeMove,
     MoldNodeTypeCreate, MoldNodeTypeUpdate, MoldNodeUpdate,
-    MoldProductsReplace, MoldStatusUpdate, MoldUpdate, StatusUpdate,
+    MoldDocumentCreate, MoldProductsReplace, MoldStatusUpdate, MoldUpdate, StatusUpdate,
 )
+from app.modules.mold.service import log_event
 from app.modules.master_data.molds.service import (
     calculate_level, check_duplicate, get_attribute, get_mold, get_node,
     get_node_type, is_node_descendant, replace_attribute_values,
@@ -111,10 +112,10 @@ def create_node_type(payload: MoldNodeTypeCreate):
     try:
         check_duplicate(cur, "mold_location_node_types", "type_code", payload.type_code)
         cur.execute("""INSERT INTO mold_location_node_types
-            (type_code,type_name,level_order,icon,color,description,is_active,sort_order,created_by)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (type_code,type_name,level_order,icon,color,description,is_active,sort_order,location_category,created_by)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (payload.type_code,payload.type_name,payload.level_order,payload.icon,payload.color,
-             payload.description,payload.is_active,payload.sort_order,payload.created_by))
+             payload.description,payload.is_active,payload.sort_order,payload.location_category,payload.created_by))
         conn.commit(); return {"message":"Mold location node type created successfully.","id":cur.lastrowid}
     except HTTPException: conn.rollback(); raise
     except Exception as exc: conn.rollback(); _db_error(exc)
@@ -130,9 +131,9 @@ def update_node_type(type_id: int, payload: MoldNodeTypeUpdate):
             cur.execute("SELECT COUNT(*) total FROM mold_location_nodes WHERE node_type_id=%s AND status='ACTIVE'",(type_id,))
             if cur.fetchone()["total"]: raise HTTPException(409,"Deactivate nodes of this type first.")
         cur.execute("""UPDATE mold_location_node_types SET type_name=%s,level_order=%s,icon=%s,color=%s,
-            description=%s,is_active=%s,sort_order=%s,updated_by=%s WHERE id=%s""",
+            description=%s,is_active=%s,sort_order=%s,location_category=%s,updated_by=%s WHERE id=%s""",
             (payload.type_name,payload.level_order,payload.icon,payload.color,payload.description,
-             payload.is_active,payload.sort_order,payload.updated_by,type_id))
+             payload.is_active,payload.sort_order,payload.location_category,payload.updated_by,type_id))
         conn.commit(); return {"message":"Mold location node type updated successfully."}
     except HTTPException: conn.rollback(); raise
     except Exception as exc: conn.rollback(); _db_error(exc)
@@ -194,10 +195,10 @@ def create_node(payload: MoldNodeCreate):
         check_duplicate(cur,"mold_location_nodes","node_code",payload.node_code); get_node_type(cur,payload.node_type_id,True)
         level=calculate_level(cur,payload.parent_id)
         cur.execute("""INSERT INTO mold_location_nodes
-            (node_code,node_name,node_type_id,parent_id,level_no,sort_order,description,status,created_by)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (node_code,node_name,node_type_id,parent_id,level_no,sort_order,description,status,capacity,created_by)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (payload.node_code,payload.node_name,payload.node_type_id,payload.parent_id,level,
-             payload.sort_order,payload.description,payload.status,payload.created_by))
+             payload.sort_order,payload.description,payload.status,payload.capacity,payload.created_by))
         conn.commit(); return {"message":"Mold location node created successfully.","id":cur.lastrowid}
     except HTTPException: conn.rollback(); raise
     except Exception as exc: conn.rollback(); _db_error(exc)
@@ -213,9 +214,9 @@ def update_node(node_id: int,payload:MoldNodeUpdate):
             raise HTTPException(400,"Cannot move a node into itself or its descendant.")
         level=calculate_level(cur,payload.parent_id)
         cur.execute("""UPDATE mold_location_nodes SET node_name=%s,node_type_id=%s,parent_id=%s,level_no=%s,
-            sort_order=%s,description=%s,status=%s,updated_by=%s WHERE id=%s""",
+            sort_order=%s,description=%s,status=%s,capacity=%s,updated_by=%s WHERE id=%s""",
             (payload.node_name,payload.node_type_id,payload.parent_id,level,payload.sort_order,
-             payload.description,payload.status,payload.updated_by,node_id))
+             payload.description,payload.status,payload.capacity,payload.updated_by,node_id))
         update_descendant_levels(cur,node_id,level); conn.commit(); return {"message":"Mold location node updated successfully."}
     except HTTPException: conn.rollback(); raise
     except Exception as exc: conn.rollback(); _db_error(exc)
@@ -227,7 +228,7 @@ def move_node(node_id:int,payload:MoldNodeMove):
     current=node_detail(node_id)
     return update_node(node_id,MoldNodeUpdate(node_name=current["node_name"],node_type_id=current["node_type_id"],
         parent_id=payload.parent_id,sort_order=payload.sort_order,description=current["description"],
-        status=current["status"],updated_by=payload.updated_by))
+        status=current["status"],capacity=current.get("capacity"),updated_by=payload.updated_by))
 
 
 @router.patch("/location-nodes/{node_id}/status")
@@ -390,16 +391,39 @@ def _write_mold(cur,payload,mold_id:int|None=None):
     values=(payload.mold_name,payload.mold_type,payload.mold_group,payload.cavity_count,payload.status,
       payload.current_location_id,payload.design_shot,payload.current_shot,payload.weight_kg,payload.length_mm,
       payload.width_mm,payload.height_mm,payload.manufacturer,payload.manufacture_date,payload.image_url,
-      payload.description,payload.remark,payload.is_active)
+      payload.description,payload.remark,payload.is_active,payload.revision,payload.pm_interval_shot or None,payload.pm_interval_days or None)
     if mold_id is None:
         cur.execute("""INSERT INTO molds (mold_code,mold_name,mold_type,mold_group,cavity_count,status,current_location_id,
           design_shot,current_shot,weight_kg,length_mm,width_mm,height_mm,manufacturer,manufacture_date,image_url,
-          description,remark,is_active,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+          description,remark,is_active,revision,pm_interval_shot,pm_interval_days,status_since,location_since,created_by)
+          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),%s)""",
           (payload.mold_code,)+values+(payload.created_by,));return cur.lastrowid
     cur.execute("""UPDATE molds SET mold_name=%s,mold_type=%s,mold_group=%s,cavity_count=%s,status=%s,current_location_id=%s,
       design_shot=%s,current_shot=%s,weight_kg=%s,length_mm=%s,width_mm=%s,height_mm=%s,manufacturer=%s,
-      manufacture_date=%s,image_url=%s,description=%s,remark=%s,is_active=%s,updated_by=%s WHERE id=%s""",
+      manufacture_date=%s,image_url=%s,description=%s,remark=%s,is_active=%s,revision=%s,pm_interval_shot=%s,pm_interval_days=%s,
+      updated_by=%s WHERE id=%s""",
       values+(payload.updated_by,mold_id));return mold_id
+
+
+def _guard_status(before,status):
+    """The mounted state belongs to Mold Management (install / remove); admins cannot fake it here."""
+    if before and before.get("current_machine_id") and status!="IN_PRODUCTION":
+        raise HTTPException(409,"The mold is mounted on a machine. Remove it in Mold Management first.")
+    if status=="IN_PRODUCTION" and not (before and before.get("current_machine_id")):
+        raise HTTPException(409,"In Production is set by installing the mold on a machine in Mold Management.")
+
+
+def _log_master_changes(cur,before,mold_id,actor):
+    cur.execute("SELECT status,current_location_id,current_shot FROM molds WHERE id=%s",(mold_id,))
+    after=cur.fetchone()
+    if before["status"]!=after["status"]:
+        cur.execute("UPDATE molds SET status_since=NOW() WHERE id=%s",(mold_id,))
+        log_event(cur,mold_id,"STATUS",actor,from_status=before["status"],to_status=after["status"],reason="Mold Master")
+    if before["current_location_id"]!=after["current_location_id"]:
+        cur.execute("UPDATE molds SET location_since=NOW() WHERE id=%s",(mold_id,))
+        log_event(cur,mold_id,"MOVE",actor,from_location_id=before["current_location_id"],to_location_id=after["current_location_id"],reason="Mold Master")
+    if int(before["current_shot"] or 0)!=int(after["current_shot"] or 0):
+        log_event(cur,mold_id,"SHOT_ADJUST",actor,shot_before=before["current_shot"] or 0,shot_after=after["current_shot"] or 0,reason="Mold Master")
 
 
 @router.post("/molds",status_code=201)
@@ -408,6 +432,7 @@ def create_mold(payload:MoldCreate):
     try:
         check_duplicate(cur,"molds","mold_code",payload.mold_code)
         if payload.current_location_id:get_node(cur,payload.current_location_id,True)
+        _guard_status(None,payload.status)
         mold_id=_write_mold(cur,payload);replace_attribute_values(cur,mold_id,payload.attribute_values,payload.created_by)
         replace_products(cur,mold_id,payload.products,payload.created_by);conn.commit()
         return {"message":"Mold created successfully.","id":mold_id}
@@ -421,8 +446,11 @@ def update_mold(mold_id:int,payload:MoldUpdate):
     conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
     try:
         get_mold(cur,mold_id)
+        cur.execute("SELECT status,current_location_id,current_shot,current_machine_id FROM molds WHERE id=%s FOR UPDATE",(mold_id,));before=cur.fetchone()
         if payload.current_location_id:get_node(cur,payload.current_location_id,True)
-        _write_mold(cur,payload,mold_id);replace_attribute_values(cur,mold_id,payload.attribute_values,payload.updated_by)
+        if payload.status!=before["status"]:_guard_status(before,payload.status)
+        _write_mold(cur,payload,mold_id);_log_master_changes(cur,before,mold_id,payload.updated_by)
+        replace_attribute_values(cur,mold_id,payload.attribute_values,payload.updated_by)
         replace_products(cur,mold_id,payload.products,payload.updated_by);conn.commit();return {"message":"Mold updated successfully."}
     except HTTPException:conn.rollback();raise
     except Exception as exc:conn.rollback();_db_error(exc)
@@ -433,7 +461,11 @@ def update_mold(mold_id:int,payload:MoldUpdate):
 def update_mold_status(mold_id:int,payload:MoldStatusUpdate):
     conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
     try:
-        get_mold(cur,mold_id);cur.execute("UPDATE molds SET status=%s,updated_by=%s WHERE id=%s",(payload.status,payload.updated_by,mold_id));conn.commit()
+        get_mold(cur,mold_id)
+        cur.execute("SELECT status,current_location_id,current_shot,current_machine_id FROM molds WHERE id=%s FOR UPDATE",(mold_id,));before=cur.fetchone()
+        if payload.status!=before["status"]:_guard_status(before,payload.status)
+        cur.execute("UPDATE molds SET status=%s,updated_by=%s WHERE id=%s",(payload.status,payload.updated_by,mold_id))
+        _log_master_changes(cur,before,mold_id,payload.updated_by);conn.commit()
         return {"message":"Mold status updated successfully."}
     except HTTPException:conn.rollback();raise
     except Exception as exc:conn.rollback();_db_error(exc)
@@ -473,6 +505,43 @@ def mold_products(mold_id:int):
 def put_mold_products(mold_id:int,payload:MoldProductsReplace):
     conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
     try:get_mold(cur,mold_id);replace_products(cur,mold_id,payload.products,payload.updated_by);conn.commit();return {"message":"Mold products updated successfully."}
+    except HTTPException:conn.rollback();raise
+    except Exception as exc:conn.rollback();_db_error(exc)
+    finally:cur.close();conn.close()
+
+
+
+# ------------------------- Documents (files uploaded via /api/files/documents) -------------------------
+
+@router.get("/molds/{mold_id}/documents")
+def list_documents(mold_id:int):
+    conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
+    try:
+        get_mold(cur,mold_id);cur.execute("SELECT * FROM mold_documents WHERE mold_id=%s ORDER BY doc_type,uploaded_at DESC",(mold_id,));return cur.fetchall()
+    finally:cur.close();conn.close()
+
+
+@router.post("/molds/{mold_id}/documents",status_code=201)
+def add_document(mold_id:int,payload:MoldDocumentCreate):
+    conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
+    try:
+        get_mold(cur,mold_id)
+        if not payload.file_url.startswith("/uploads/"):raise HTTPException(400,"Upload the file first.")
+        cur.execute("""INSERT INTO mold_documents (mold_id,doc_type,title,file_url,file_name,file_size,uploaded_by) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (mold_id,payload.doc_type,payload.title.strip(),payload.file_url,payload.file_name,payload.file_size,payload.uploaded_by))
+        conn.commit();return {"message":"Document added.","id":cur.lastrowid}
+    except HTTPException:conn.rollback();raise
+    except Exception as exc:conn.rollback();_db_error(exc)
+    finally:cur.close();conn.close()
+
+
+@router.delete("/molds/{mold_id}/documents/{doc_id}")
+def delete_document(mold_id:int,doc_id:int):
+    conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
+    try:
+        cur.execute("DELETE FROM mold_documents WHERE id=%s AND mold_id=%s",(doc_id,mold_id))
+        if not cur.rowcount:raise HTTPException(404,"Document not found.")
+        conn.commit();return {"message":"Document deleted."}
     except HTTPException:conn.rollback();raise
     except Exception as exc:conn.rollback();_db_error(exc)
     finally:cur.close();conn.close()

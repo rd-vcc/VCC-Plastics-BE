@@ -10,6 +10,7 @@ class FactoryNodeCreate(BaseModel):
     parent_id: Optional[int] = None
     sort_order: int = 0
     description: Optional[str] = Field(default=None, max_length=500)
+    image_url: Optional[str] = Field(default=None, max_length=1000)
     status: str = "ACTIVE"
     created_by: Optional[str] = Field(default=None, max_length=50)
 
@@ -40,6 +41,7 @@ class FactoryNodeUpdate(BaseModel):
     parent_id: Optional[int] = None
     sort_order: int = 0
     description: Optional[str] = Field(default=None, max_length=500)
+    image_url: Optional[str] = Field(default=None, max_length=1000)
     status: str = "ACTIVE"
     updated_by: Optional[str] = Field(default=None, max_length=50)
 
