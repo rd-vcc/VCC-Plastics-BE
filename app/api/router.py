@@ -44,6 +44,11 @@ from app.modules.machine.alarm_router import router as alarm_router
 from app.modules.machine.monitoring_router import router as machine_monitoring_router
 from app.modules.mold.router import router as mold_management_router
 from app.modules.maintenance.router import router as maintenance_router
+from app.modules.quality.router import router as quality_router
+from app.modules.traceability.router import router as traceability_router
+from app.modules.dashboard.router import router as dashboard_router
+from app.modules.reports.router import router as reports_router
+from app.modules.administration.audit.router import router as audit_router
 
 api_router = APIRouter()
 
@@ -83,3 +88,8 @@ api_router.include_router(alarm_router)
 api_router.include_router(machine_monitoring_router)
 api_router.include_router(mold_management_router)
 api_router.include_router(maintenance_router)
+api_router.include_router(quality_router)
+api_router.include_router(traceability_router)
+api_router.include_router(dashboard_router)
+api_router.include_router(reports_router)
+api_router.include_router(audit_router)

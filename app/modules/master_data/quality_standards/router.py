@@ -245,11 +245,13 @@ def create_new_revision(standard_id: int, payload: NewRevisionCreate):
         cur.executemany(
             """INSERT INTO quality_standard_characteristics
                (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
-                equipment_type_id, inspection_frequency, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
+                cpk_target, is_critical, sort_order, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [
                 (new_revision_id, c["characteristic_name"], c["nominal_value"], c["lsl"], c["usl"], c["unit"],
-                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["sort_order"],
+                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["characteristic_type"],
+                 c["is_spc"], c["chart_type"], c["subgroup_size"], c["cpk_target"], c["is_critical"], c["sort_order"],
                  payload.created_by)
                 for c in characteristics
             ],
@@ -427,11 +429,13 @@ def copy_standard(standard_id: int, payload: CopyStandardRequest):
         cur.executemany(
             """INSERT INTO quality_standard_characteristics
                (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
-                equipment_type_id, inspection_frequency, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
+                cpk_target, is_critical, sort_order, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [
                 (new_revision_id, c["characteristic_name"], c["nominal_value"], c["lsl"], c["usl"], c["unit"],
-                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["sort_order"],
+                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["characteristic_type"],
+                 c["is_spc"], c["chart_type"], c["subgroup_size"], c["cpk_target"], c["is_critical"], c["sort_order"],
                  payload.created_by)
                 for c in characteristics
             ],

@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/files", tags=["Files"])
 UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "storage" / "uploads"
 IMAGE_ROOT = UPLOAD_ROOT / "images"
 MAX_BYTES = 5 * 1024 * 1024
-CATEGORIES = {"product", "machine", "equipment", "mold", "material", "production_tool", "measuring_equipment", "factory", "location", "user", "maintenance", "other"}
+CATEGORIES = {"product", "machine", "equipment", "mold", "material", "production_tool", "measuring_equipment", "factory", "location", "user", "maintenance", "quality", "other"}
 SIGNATURES = [
     (b"\x89PNG\r\n\x1a\n", "png"),
     (b"\xff\xd8\xff", "jpg"),
@@ -74,7 +74,7 @@ def upload_image(payload: ImageIn):
 
 DOC_ROOT = UPLOAD_ROOT / "documents"
 DOC_MAX_BYTES = 20 * 1024 * 1024
-DOC_CATEGORIES = {"mold", "machine", "product", "maintenance", "other"}
+DOC_CATEGORIES = {"mold", "machine", "product", "maintenance", "quality", "measuring_equipment", "other"}
 OFFICE_EXT = {"docx", "xlsx", "pptx"}
 
 

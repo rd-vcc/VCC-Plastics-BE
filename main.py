@@ -6,6 +6,7 @@ from app.api.health import router as health_router
 from app.api.router import api_router
 from app.core.config import APP_NAME, APP_VERSION, CORS_ALLOW_ORIGINS
 from app.middleware.error_handler import register_error_handlers
+from app.middleware.audit_middleware import audit_middleware
 from app.middleware.request_logging import request_logging_middleware
 from app.modules.files.router import UPLOAD_ROOT
 
@@ -23,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.middleware("http")(audit_middleware)
 app.middleware("http")(request_logging_middleware)
 register_error_handlers(app)
 
@@ -37,10 +39,19 @@ def _start_iot_simulator():
     simulator.start()
 
 
+@app.on_event("startup")
+def _start_report_scheduler():
+    # Report Center: generates the scheduled reports (report_schedules)
+    from app.modules.reports import service as reports
+    reports.start_scheduler()
+
+
 @app.on_event("shutdown")
 def _stop_iot_simulator():
     from app.modules.machine import simulator
     simulator.stop()
+    from app.modules.reports import service as reports
+    reports.stop_scheduler()
 
 # uploaded master-data images (System Configuration)
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)

@@ -24,6 +24,12 @@ class CharacteristicInput(BaseModel):
     inspection_method: Optional[str] = Field(default=None, max_length=150)
     equipment_type_id: Optional[int] = Field(default=None, gt=0)
     inspection_frequency: Optional[str] = Field(default=None, max_length=100)
+    characteristic_type: str = Field(default="VARIABLE", pattern="^(VARIABLE|ATTRIBUTE)$")
+    is_spc: bool = False
+    chart_type: str = Field(default="XBAR_R", pattern="^(XBAR_R|IMR)$")
+    subgroup_size: int = Field(default=5, ge=1, le=10)
+    cpk_target: Optional[Decimal] = Field(default=Decimal("1.33"), ge=0)
+    is_critical: bool = False
     sort_order: int = 0
 
     @field_validator("characteristic_name")

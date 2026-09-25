@@ -5,8 +5,8 @@ Two views of the same data:
   inside the date range, so a Work Order running over midnight is split correctly between days.
 - The result list, product summary and machine ranking are per Work Order (its totals so far),
   for every Work Order that produced or finished inside the range.
-Quality summary: PPM = reject / total x 1,000,000. First-pass yield equals yield until rework is
-recorded by the Quality module; rework is 0 until then.
+Quality summary: PPM = reject / total x 1,000,000. Rework = pieces of the NG records (Quality Management)
+detected in the period whose disposition is rework; reworked pieces were rejects, so first-pass yield = good / total.
 """
 
 from collections import defaultdict
@@ -182,7 +182,15 @@ def summary(date_from: date | None = None, date_to: date | None = None, machine_
             s["yield"] = _pct(s["good"], s["good"] + s["reject"])
             s["oee"] = round(sum(s["oee"]) / len(s["oee"]), 1) if s["oee"] else None
 
-        quality = {"ppm": round(reject / total * 1_000_000) if total else None, "fpy": _pct(good, total), "rework": 0, "scrap": reject}
+        rw_where, rw_params = "", []
+        if machine_id:
+            rw_where += " AND n.machine_id=%s"; rw_params.append(machine_id)
+        if product_id:
+            rw_where += " AND n.product_id=%s"; rw_params.append(product_id)
+        cur.execute(f"SELECT COALESCE(SUM(n.rework_qty),0) r FROM quality_ng_records n WHERE n.detected_at >= %s AND n.detected_at < %s{rw_where}",
+                    (start_dt, end_dt, *rw_params))
+        rework = int(cur.fetchone()["r"] or 0)
+        quality = {"ppm": round(reject / total * 1_000_000) if total else None, "fpy": _pct(good, total), "rework": rework, "scrap": reject}
         return {
             "items": items, "kpis": kpis, "trend": trend, "reject_reasons": reject_reasons,
             "products": sorted(products.values(), key=lambda p: -p["good"]),

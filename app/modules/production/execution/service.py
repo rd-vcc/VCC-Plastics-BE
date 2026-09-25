@@ -22,6 +22,7 @@ from fastapi import HTTPException
 
 from app.modules.machine import service as machine
 from app.modules.mold import service as mold_service
+from app.modules.quality import service as quality_service
 from app.modules.material.usage.service import backflush
 from app.modules.production.orders.service import sync_order_status
 from app.modules.material.requirements.service import sync_work_order
@@ -116,6 +117,7 @@ def start(cur, wo_id, operator, leader, actor, version):
     write_audit(cur, "WORK_ORDER", wo_id, "START", "RELEASED", "IN_PRODUCTION", actor, f"Operator {operator}")
     _set_machine(cur, wo["machine_id"], "RUNNING", wo_id, f"{wo['wo_no']} started")
     mold_service.on_wo_start(cur, wo, operator, actor)
+    quality_service.on_wo_start(cur, wo, actor)
     _sync(cur, wo, actor)
 
 
@@ -134,6 +136,7 @@ def output(cur, wo_id, good, reject, reason_code_id, reason_text, actor, version
     _bump(cur, wo, version, "actual_qty=actual_qty+%s, reject_qty=reject_qty+%s, last_output_at=NOW()", (good, reject), actor)
     mold_service.add_shots(cur, wo["mold_id"], shots)
     log_event(cur, wo, "OUTPUT" if good else "REJECT", actor, good, reject, cycle if cycle and cycle < 3600 else None, reason_code_id, reason_text)
+    quality_service.on_production_reject(cur, wo, reject, reason_code_id, reason_text, actor)
     _sync(cur, wo, actor)
     return backflush(cur, wo_id, actor)
 
@@ -150,6 +153,7 @@ def reject(cur, wo_id, qty, from_good, reason_code_id, reason_text, actor, versi
             raise HTTPException(status_code=409, detail="Cannot move more pieces than the good quantity.")
         _bump(cur, wo, version, "actual_qty=actual_qty-%s, reject_qty=reject_qty+%s", (qty, qty), actor)
         log_event(cur, wo, "REJECT", actor, -qty, qty, None, reason_code_id, reason_text)
+        quality_service.on_production_reject(cur, wo, qty, reason_code_id, reason_text, actor)
         _sync(cur, wo, actor)
         return {"created": [], "not_at_machine": []}
     if wo["status"] != "IN_PRODUCTION":
@@ -217,6 +221,7 @@ def end(cur, wo_id, remark, actor, version):
     write_audit(cur, "WORK_ORDER", wo_id, "COMPLETE", wo["status"], "COMPLETED", actor, summary)
     _set_machine(cur, wo["machine_id"], "IDLE")
     mold_service.on_wo_end(cur, wo, actor)
+    quality_service.on_wo_end(cur, wo, actor)
     _sync(cur, wo, actor)
     return result
 

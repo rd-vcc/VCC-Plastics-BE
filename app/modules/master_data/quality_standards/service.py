@@ -60,10 +60,12 @@ def replace_characteristics(cur, revision_id: int, characteristics, actor: str |
         cur.execute(
             """INSERT INTO quality_standard_characteristics
                (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
-                equipment_type_id, inspection_frequency, sort_order, created_by, updated_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
+                cpk_target, is_critical, sort_order, created_by, updated_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (revision_id, item.characteristic_name, item.nominal_value, item.lsl, item.usl, item.unit,
-             item.inspection_method, item.equipment_type_id, item.inspection_frequency, item.sort_order,
+             item.inspection_method, item.equipment_type_id, item.inspection_frequency, item.characteristic_type,
+             int(item.is_spc), item.chart_type, item.subgroup_size, item.cpk_target, int(item.is_critical), item.sort_order,
              actor, actor),
         )
 
