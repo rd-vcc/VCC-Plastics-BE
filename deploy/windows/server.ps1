@@ -22,6 +22,8 @@ $Fe = @('VCC-Plastics-FE', 'VCC-Plastics-FE-main') |
     Select-Object -First 1
 $Logs = Join-Path $Be 'logs'
 New-Item -ItemType Directory -Force -Path $Logs | Out-Null
+$script:Out = New-Object System.Collections.Generic.List[string]
+function Say([string]$Text) { Write-Host $Text; $script:Out.Add($Text) }
 
 function Get-ListenerPids([int[]]$Ports) {
     Get-NetTCPConnection -State Listen -LocalPort $Ports -ErrorAction SilentlyContinue |
@@ -32,19 +34,25 @@ function Get-ListenerPids([int[]]$Ports) {
 function Test-Port([int]$Port) { [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue) }
 
 function Get-LanUrl {
-    $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254*' -and $_.PrefixOrigin -ne 'WellKnown' } |
-        Select-Object -First 1 -ExpandProperty IPAddress
+    # the real LAN card is the one with a default gateway (skips Hyper-V / WSL / VPN virtual adapters)
+    $ip = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
+        ForEach-Object { $_.IPv4Address.IPAddress } | Select-Object -First 1
+    if (-not $ip) {
+        $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254*' } |
+            Select-Object -First 1 -ExpandProperty IPAddress
+    }
     if ($ip) { "http://${ip}:$FrontendPort" } else { "http://localhost:$FrontendPort" }
 }
 
 function Stop-Servers {
     $pids = @(Get-ListenerPids @($BackendPort, $FrontendPort))
-    if (-not $pids.Count) { Write-Host 'Khong co server nao dang chay.'; return }
+    if (-not $pids.Count) { Say 'Khong co server nao dang chay.'; return }
     foreach ($p in $pids) {
         $name = (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName
         & taskkill.exe /PID $p /T /F | Out-Null
-        Write-Host "Da tat tien trinh $p ($name)"
+        Say "Da tat tien trinh $p ($name)"
     }
     for ($i = 0; $i -lt 20 -and (Test-Port $BackendPort -or (Test-Port $FrontendPort)); $i++) { Start-Sleep -Milliseconds 500 }
 }
@@ -59,9 +67,9 @@ function Start-Hidden([string]$CommandLine, [string]$WorkDir) {
 
 function Show-Status {
     $be = Test-Port $BackendPort; $fe = Test-Port $FrontendPort
-    Write-Host ("Backend  (cong {0}): {1}" -f $BackendPort, $(if ($be) { 'DANG CHAY' } else { 'DA TAT' }))
-    Write-Host ("Giao dien (cong {0}): {1}" -f $FrontendPort, $(if ($fe) { 'DANG CHAY' } else { 'DA TAT' }))
-    if ($be -and $fe) { Write-Host "Truy cap: $(Get-LanUrl)" }
+    Say ("Backend  (cong {0}): {1}" -f $BackendPort, $(if ($be) { 'DANG CHAY' } else { 'DA TAT' }))
+    Say ("Giao dien (cong {0}): {1}" -f $FrontendPort, $(if ($fe) { 'DANG CHAY' } else { 'DA TAT' }))
+    if ($be -and $fe) { Say "Truy cap: $(Get-LanUrl)" }
 }
 
 function Start-Servers {
@@ -75,13 +83,13 @@ function Start-Servers {
 
     Stop-Servers | Out-Null
 
-    Write-Host 'Dang build giao dien (khoang 10-30 giay)...'
+    Say 'Dang build giao dien (khoang 10-30 giay)...'
     $buildLog = Join-Path $Logs 'frontend-build.log'
     $build = Start-Process -FilePath $node -ArgumentList "`"$vite`" build" -WorkingDirectory $Fe -NoNewWindow -Wait -PassThru `
         -RedirectStandardOutput $buildLog -RedirectStandardError (Join-Path $Logs 'frontend-build.err.log')
     if ($build.ExitCode -ne 0) { throw "Build giao dien bi loi - xem $buildLog va frontend-build.err.log" }
 
-    Write-Host 'Dang bat backend va giao dien (chay an)...'
+    Say 'Dang bat backend va giao dien (chay an)...'
     $beLog = Join-Path $Logs 'backend.log'
     $feLog = Join-Path $Logs 'frontend.log'
     Start-Hidden "cmd.exe /c set PYTHONUTF8=1&& `"$python`" -m uvicorn main:app --host 0.0.0.0 --port $BackendPort > `"$beLog`" 2>&1" $Be
@@ -100,7 +108,13 @@ try {
         'stop' { Stop-Servers; Show-Status }
         'status' { Show-Status }
     }
+    $code = 0
 } catch {
     Write-Host "LOI: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+    $script:Out.Add("LOI: $($_.Exception.Message)")
+    $code = 1
+} finally {
+    # last result, read by Chay_server_an.vbs / Tat_server.vbs to show a message box
+    try { $script:Out | Set-Content -Path (Join-Path $Logs 'last_action.txt') -Encoding ascii } catch { }
 }
+exit $code

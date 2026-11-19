@@ -17,6 +17,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo.
-echo Server dang chay an. Co the dong cua so nay. Muon tat: chay Tat_server.bat
-timeout /t 8 >nul
+exit /b 0

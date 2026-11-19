@@ -51,8 +51,10 @@ uvicorn main:app --reload --host 0.0.0.0 --port 5005
 May chu Windows (chay an, khong de lai cua so) - script trong `deploy/windows`, co the chep 2 file `.bat`
 ra thu muc goc canh `VCC-Plastics-BE` va `VCC-Plastics-FE`:
 
-- `Chay_server_an.bat` - build giao dien, bat backend (5005) + giao dien ban build (5173, `vite preview`) chay an
-- `Tat_server.bat` - tat ca hai neu dang chay
+- `Chay_server_an.vbs` - khuyen dung: khong mo cua so cmd nao; build giao dien, bat backend (5005)
+  + giao dien ban build (5173, `vite preview`) chay an, bao ket qua bang thong bao nho tu tat
+- `Tat_server.vbs` - tat ca hai neu dang chay (cung khong mo cua so)
+- `Chay_server_an.bat` / `Tat_server.bat` - nhu tren nhung hien cua so cmd trong luc chay (dong ngay khi xong)
 - Log: `logs/backend.log`, `logs/frontend.log`, `logs/frontend-build.log`
 
 Swagger:

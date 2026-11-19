@@ -10,4 +10,4 @@ if not exist "%PS1%" (
   exit /b 1
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" stop
-timeout /t 5 >nul
+if errorlevel 1 pause
