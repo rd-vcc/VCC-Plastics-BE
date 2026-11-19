@@ -7,7 +7,8 @@ load_dotenv(BASE_DIR / ".env")
 
 APP_NAME = os.getenv("APP_NAME", "VCC Plastics API")
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
-VCC_GROUP_API = os.getenv("VCC_GROUP_API", "http://10.73.132.100:5000").rstrip("/")
+# Empty (VCC_GROUP_API= in .env) = standalone: no VCC Group login / employee directory calls.
+VCC_GROUP_API = os.getenv("VCC_GROUP_API", "http://10.73.132.100:5000").strip().rstrip("/")
 CORS_ALLOW_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "*")
 
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")

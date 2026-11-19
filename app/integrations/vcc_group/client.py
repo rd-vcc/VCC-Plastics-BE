@@ -43,7 +43,7 @@ def post_login(username: str, password: str) -> requests.Response:
         return requests.post(
             url,
             json={"username": username, "password": password},
-            timeout=15,
+            timeout=(3, 15),  # give up quickly when VCC Group is unreachable
         )
     except requests.RequestException as exc:
         raise HTTPException(
@@ -57,7 +57,7 @@ def get_employees_list(params: dict) -> requests.Response:
         return requests.get(
             f"{VCC_GROUP_API}/employees/list",
             params=params,
-            timeout=30,
+            timeout=(3, 30),
         )
     except requests.RequestException as exc:
         raise HTTPException(

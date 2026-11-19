@@ -12,8 +12,17 @@ from app.integrations.vcc_group.client import (
 )
 from fastapi import HTTPException
 
+from app.core.config import VCC_GROUP_API
+
+
+def vcc_group_enabled() -> bool:
+    """False in standalone mode (VCC_GROUP_API left empty in .env): VCC Group is never called."""
+    return bool(VCC_GROUP_API)
+
 
 def login_vcc_group(username: str, password: str) -> dict:
+    if not vcc_group_enabled():
+        raise HTTPException(status_code=401, detail="Tài khoản hoặc mật khẩu không đúng.")
     response = post_login(username, password)
     data = read_response_json(response, "Đăng nhập VCC Group thất bại.")
 
@@ -31,7 +40,10 @@ def list_vcc_group_employees(
 
     VCC Plastics không sao chép hồ sơ nhân sự. Dữ liệu tên, chức danh và
     đơn vị tổ chức luôn được đọc từ API /employees/list của VCC Group.
+    Chế độ độc lập (không cấu hình VCC_GROUP_API): trả về danh sách rỗng.
     """
+    if not vcc_group_enabled():
+        return []
     params: dict[str, str | int] = {
         "employment_status": employment_status or "active",
     }

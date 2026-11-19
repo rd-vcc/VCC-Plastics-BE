@@ -3,6 +3,7 @@
 1. Local account: the employee has a VCC Plastics password (``mes_users.password_hash``) ->
    checked here, VCC Group is not called (works on a server that cannot reach VCC Group).
 2. Otherwise: VCC Group login as before, then MES access lookup.
+   Standalone mode (VCC_GROUP_API empty): VCC Group is not called at all.
 """
 
 import secrets
@@ -10,7 +11,7 @@ import secrets
 from fastapi import HTTPException
 
 from app.core.passwords import verify_password
-from app.integrations.vcc_group.service import login_vcc_group
+from app.integrations.vcc_group.service import login_vcc_group, vcc_group_enabled
 from app.modules.auth.repository import find_local_account, get_mes_access
 
 
@@ -39,6 +40,13 @@ def login(username: str, password: str) -> dict:
             "user": user,
             "mes_access": get_mes_access(employee_code),
         }
+
+    if account and not vcc_group_enabled():
+        # standalone server: this user has no VCC Plastics password yet
+        raise HTTPException(
+            status_code=401,
+            detail="Tài khoản chưa có mật khẩu VCC Plastics. Liên hệ quản trị viên để được đặt mật khẩu.",
+        )
 
     group_result = login_vcc_group(username, password)
     user = group_result["user"]

@@ -111,6 +111,9 @@ VCC Group (ví dụ máy chủ nhà máy ở mạng LAN khác), danh sách chỉ
 Người dùng có mật khẩu VCC Plastics (`mes_users.password_hash`) được kiểm tra ngay
 tại đây, không gọi VCC Group. Người dùng chưa có mật khẩu vẫn đăng nhập qua VCC Group.
 
+**Chạy độc lập** (máy chủ không kết nối được VCC Group): đặt `VCC_GROUP_API=` (để trống)
+trong `.env`. Khi đó hệ thống không gọi VCC Group; chỉ tài khoản có mật khẩu VCC Plastics đăng nhập được.
+
 ### Roles
 - `GET /api/roles`
 - `GET /api/roles/{role_id}`
