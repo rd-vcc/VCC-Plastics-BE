@@ -3,6 +3,17 @@
 from fastapi import HTTPException
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
+
+
+def _with_names(cur, rows):
+    """full_name from the account itself, else from the HR directory when this server has it."""
+    attach_employee_names(cur, rows, ["employee_code"])
+    for row in rows:
+        row["full_name"] = row.get("full_name") or row.pop("employee_code_name", None)
+        row.pop("employee_code_name", None)
+        row.pop("employee_code_code", None)
+    return rows
 
 
 def list_mes_users():
@@ -13,27 +24,24 @@ def list_mes_users():
             """
             SELECT
                 mu.*,
-                e.full_name,
                 GROUP_CONCAT(
                     DISTINCT r.role_code
                     ORDER BY r.role_code
                     SEPARATOR ','
                 ) AS role_codes
             FROM mes_users mu
-            LEFT JOIN nsh.employees2026_base e
-                ON e.employee_code COLLATE utf8mb4_unicode_ci
-                 = mu.employee_code COLLATE utf8mb4_unicode_ci
             LEFT JOIN user_roles ur
                 ON ur.user_id = mu.id
             LEFT JOIN roles r
                 ON r.id = ur.role_id
-            GROUP BY mu.id, e.full_name
+            GROUP BY mu.id
             ORDER BY mu.id DESC
             """
         )
-        rows = cur.fetchall()
+        rows = _with_names(cur, cur.fetchall())
 
         for row in rows:
+            row.pop("password_hash", None)  # never sent to the browser
             role_codes = row.pop("role_codes", None)
             row["roles"] = role_codes.split(",") if role_codes else []
 
@@ -49,13 +57,8 @@ def get_mes_user(user_id: int):
     try:
         cur.execute(
             """
-            SELECT
-                mu.*,
-                e.full_name
+            SELECT mu.*
             FROM mes_users mu
-            LEFT JOIN nsh.employees2026_base e
-                ON e.employee_code COLLATE utf8mb4_unicode_ci
-                 = mu.employee_code COLLATE utf8mb4_unicode_ci
             WHERE mu.id = %s
             LIMIT 1
             """,
@@ -68,6 +71,8 @@ def get_mes_user(user_id: int):
                 status_code=404,
                 detail="Khong tim thay MES user.",
             )
+        user = _with_names(cur, [user])[0]
+        user.pop("password_hash", None)  # never sent to the browser
 
         cur.execute(
             """

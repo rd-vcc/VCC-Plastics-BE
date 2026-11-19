@@ -48,6 +48,13 @@ Chay BE:
 uvicorn main:app --reload --host 0.0.0.0 --port 5005
 ```
 
+May chu Windows (chay an, khong de lai cua so) - script trong `deploy/windows`, co the chep 2 file `.bat`
+ra thu muc goc canh `VCC-Plastics-BE` va `VCC-Plastics-FE`:
+
+- `Chay_server_an.bat` - build giao dien, bat backend (5005) + giao dien ban build (5173, `vite preview`) chay an
+- `Tat_server.bat` - tat ca hai neu dang chay
+- Log: `logs/backend.log`, `logs/frontend.log`, `logs/frontend-build.log`
+
 Swagger:
 
 `http://127.0.0.1:5005/docs`

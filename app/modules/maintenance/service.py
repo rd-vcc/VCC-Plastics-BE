@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import HTTPException
 
+from app.core.employee_names import attach_employee_names
 from app.modules.machine import service as machine
 from app.modules.mold import service as mold_service
 
@@ -163,14 +164,14 @@ def all_assets(cur):
 
 
 def technicians(cur):
+    # name from the account itself, else from the HR directory when this server has it
     try:
-        cur.execute("""SELECT mu.employee_code, e.full_name FROM mes_users mu
-                       LEFT JOIN nsh.employees2026_base e ON e.employee_code COLLATE utf8mb4_unicode_ci = mu.employee_code COLLATE utf8mb4_unicode_ci
-                       WHERE mu.is_active=1 ORDER BY e.full_name, mu.employee_code""")
-        rows = cur.fetchall()
-    except Exception:  # employee directory not reachable: codes only
+        cur.execute("SELECT employee_code, full_name FROM mes_users WHERE is_active=1 ORDER BY employee_code")
+    except Exception:  # local-account columns not created yet
         cur.execute("SELECT employee_code, NULL AS full_name FROM mes_users WHERE is_active=1 ORDER BY employee_code")
-        rows = cur.fetchall()
+    rows = attach_employee_names(cur, cur.fetchall(), ["employee_code"])
+    for r in rows:
+        r["full_name"] = r["full_name"] or r.get("employee_code_name")
     clean = lambda v: str(v).encode("utf-8", "replace").decode("utf-8").replace("?", "").strip() if v else v
     names = {f"{clean(r['full_name'])} ({r['employee_code']})" if r["full_name"] else r["employee_code"] for r in rows}
     cur.execute("SELECT DISTINCT technician AS t FROM maintenance_work_orders WHERE technician IS NOT NULL UNION SELECT DISTINCT technician FROM maintenance_plans WHERE technician IS NOT NULL")
