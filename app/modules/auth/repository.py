@@ -8,6 +8,30 @@ from fastapi import HTTPException
 from app.core.database import get_vcc_plastics_connection
 
 
+def find_local_account(username: str) -> dict | None:
+    """The MES user whose employee code is `username` (leading zeros optional), with profile + password hash."""
+    code = str(username or "").strip()
+    if not code:
+        return None
+    conn = get_vcc_plastics_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        try:
+            cur.execute(
+                """SELECT employee_code, full_name, department, position, password_hash
+                   FROM mes_users
+                   WHERE TRIM(employee_code) = %s OR TRIM(LEADING '0' FROM TRIM(employee_code)) = TRIM(LEADING '0' FROM %s)
+                   ORDER BY TRIM(employee_code) = %s DESC LIMIT 1""",
+                (code, code, code),
+            )
+        except Exception:  # local-account columns not created yet (scripts.add_local_accounts not run)
+            return None
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
 def get_mes_access(employee_code: str) -> dict:
     """Return the active MES roles and permissions assigned to an employee."""
     normalized_employee_code = str(employee_code or "").strip()

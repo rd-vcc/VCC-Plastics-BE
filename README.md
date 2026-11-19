@@ -35,7 +35,12 @@ Sau do seed permission co dinh:
 python -m scripts.seed_permissions
 python -m scripts.seed_roles        # 8 vai tro chuan theo vi tri; --reset de dua quyen ve mac dinh
 python -m scripts.create_notification_tables   # thong bao trong ung dung theo quy trinh san xuat
+python -m scripts.add_local_accounts           # tai khoan dang nhap noi bo + admin 00034 / mat khau 1
 ```
+
+`add_local_accounts` them cot ho ten / bo phan / chuc vu / mat khau (ma hoa PBKDF2) vao `mes_users`
+va tao (hoac dat lai) tai khoan ADMIN. Doi tai khoan / mat khau admin:
+`python -m scripts.add_local_accounts --admin 00034 --password <mat khau> --name "Ho ten"`.
 
 Chay BE:
 
@@ -96,8 +101,15 @@ vi chua co code that - se duoc them khi co yeu cau cu the.
 - `PUT /api/user-management/employees/{employee_code}/roles` - thêm/cập nhật MES user và thay toàn bộ vai trò
 - `PATCH /api/user-management/users/{user_id}/status` - bật/tắt quyền truy cập VCC Plastics
 
-Nguồn hồ sơ nhân viên là API VCC Group `GET /employees/list`. VCC Plastics chỉ
-lưu `external_user_id`, `employee_code`, trạng thái truy cập và quan hệ vai trò.
+- `POST /api/user-management/accounts` - tạo tài khoản nội bộ (mã NV, họ tên, bộ phận, chức vụ, mật khẩu, vai trò)
+- `PUT /api/user-management/accounts/{employee_code}/password` - đặt / đổi mật khẩu VCC Plastics
+
+Nguồn hồ sơ nhân viên là API VCC Group `GET /employees/list`. Khi không gọi được
+VCC Group (ví dụ máy chủ nhà máy ở mạng LAN khác), danh sách chỉ gồm tài khoản nội bộ.
+
+### Đăng nhập
+Người dùng có mật khẩu VCC Plastics (`mes_users.password_hash`) được kiểm tra ngay
+tại đây, không gọi VCC Group. Người dùng chưa có mật khẩu vẫn đăng nhập qua VCC Group.
 
 ### Roles
 - `GET /api/roles`
@@ -154,4 +166,4 @@ Schema cho cac bang nay nam trong `migrations/versions/0001_baseline.py`
 
 ## Login flow
 
-FE -> VCC Plastics `/api/auth/login` -> VCC Group `/api/login` -> kiem tra `mes_users` -> lay Role -> lay Permission -> tra ve FE.
+FE -> VCC Plastics `/api/auth/login` -> (co mat khau noi bo: kiem tra tai cho | khong: VCC Group `/api/login`) -> kiem tra `mes_users` -> lay Role -> lay Permission -> tra ve FE.

@@ -18,13 +18,19 @@ def employee_label(cur, code):
 
 
 def active_employees(cur):
-    """Active employees for pickers: [{employee_code, full_name, position}] (empty if the directory is unreachable)."""
+    """Active employees for pickers: [{employee_code, full_name, position}] from the directory plus local accounts."""
     try:
         cur.execute("""SELECT employee_code, full_name, position FROM nsh.employees2026_base
                        WHERE employment_status='active' AND employee_code IS NOT NULL""")
         rows = cur.fetchall()
+    except Exception:  # no employee directory on this server
+        rows = []
+    try:  # plus local VCC Plastics accounts that are not in the directory
+        known = {_key(r["employee_code"]) for r in rows}
+        cur.execute("SELECT employee_code, full_name, position FROM mes_users WHERE is_active = 1 AND full_name IS NOT NULL")
+        rows += [r for r in cur.fetchall() if _key(r["employee_code"]) not in known]
     except Exception:
-        return []
+        pass
     # the directory has stray spaces and a few broken characters: tidy names before showing them
     clean = lambda v: str(v).encode("utf-8", "replace").decode("utf-8").replace("?", "").strip() if v else v
     rows = [{**r, "full_name": clean(r["full_name"])} for r in rows]
@@ -45,8 +51,19 @@ def attach_employee_names(cur, rows, fields):
                 tuple(codes),
             )
             employees = {_key(r["employee_code"]): r for r in cur.fetchall()}
-        except Exception:  # employee directory not reachable: codes only
+        except Exception:  # employee directory not reachable: local accounts below
             employees = {}
+        missing = [c for c in codes if c not in employees]
+        if missing:  # local VCC Plastics accounts (mes_users.full_name) fill the gaps
+            try:
+                cur.execute(
+                    f"""SELECT employee_code, full_name FROM mes_users
+                        WHERE full_name IS NOT NULL AND TRIM(LEADING '0' FROM employee_code) IN ({", ".join(["%s"] * len(missing))})""",
+                    tuple(missing),
+                )
+                employees.update({_key(r["employee_code"]): r for r in cur.fetchall()})
+            except Exception:
+                pass
     for row in rows:
         if not row:
             continue

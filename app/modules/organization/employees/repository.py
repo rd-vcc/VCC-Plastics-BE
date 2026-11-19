@@ -9,14 +9,14 @@ def load_assignment_map() -> dict[str, dict]:
     conn = get_vcc_plastics_connection()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute(
-            """
+        select = """
             SELECT
                 mu.id AS mes_user_id,
                 mu.external_user_id,
                 mu.employee_code,
                 mu.is_active AS mes_is_active,
                 mu.last_login_at,
+                {profile}
                 r.id AS role_id,
                 r.role_code,
                 r.role_name,
@@ -26,7 +26,10 @@ def load_assignment_map() -> dict[str, dict]:
             LEFT JOIN roles r ON r.id = ur.role_id
             ORDER BY mu.employee_code, r.role_name
             """
-        )
+        try:
+            cur.execute(select.format(profile="mu.full_name, mu.department, mu.position, mu.password_hash IS NOT NULL AS has_password,"))
+        except Exception:  # local-account columns not created yet (scripts.add_local_accounts)
+            cur.execute(select.format(profile="NULL AS full_name, NULL AS department, NULL AS position, 0 AS has_password,"))
         result: dict[str, dict] = {}
         for row in cur.fetchall():
             key = str(row["employee_code"] or "").strip().casefold()
@@ -35,6 +38,11 @@ def load_assignment_map() -> dict[str, dict]:
                 {
                     "mes_user_id": row["mes_user_id"],
                     "external_user_id": row["external_user_id"],
+                    "employee_code": str(row["employee_code"] or "").strip(),
+                    "full_name": row["full_name"],
+                    "department": row["department"],
+                    "position": row["position"],
+                    "has_password": bool(row["has_password"]),
                     "mes_is_active": bool(row["mes_is_active"]),
                     "last_login_at": row["last_login_at"],
                     "role_ids": [],
@@ -167,6 +175,69 @@ def update_user_status(user_id: int, is_active: bool, updated_by: str | None):
             "mes_user_id": user_id,
             "is_active": is_active,
         }
+    finally:
+        cur.close()
+        conn.close()
+
+
+def find_mes_user(employee_code: str) -> dict | None:
+    conn = get_vcc_plastics_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id, external_user_id, employee_code FROM mes_users WHERE TRIM(employee_code) = %s LIMIT 1", (employee_code.strip(),))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def create_local_account(employee_code, full_name, department, position, password_hash, role_ids, is_active, created_by,
+                         external_user_id=None):
+    """New MES user that signs in with a VCC Plastics password (no VCC Group profile needed)."""
+    conn = get_vcc_plastics_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id FROM mes_users WHERE TRIM(employee_code) = %s", (employee_code,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Mã nhân viên {employee_code} đã có tài khoản.")
+        validate_role_ids(cur, role_ids)
+        cur.execute(
+            """INSERT INTO mes_users (external_user_id, employee_code, full_name, department, position, password_hash,
+                                      password_changed_at, is_active, created_by, updated_by)
+               VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)""",
+            (external_user_id, employee_code, full_name, department, position, password_hash, 1 if is_active else 0,
+             created_by, created_by),
+        )
+        user_id = cur.lastrowid
+        if role_ids:
+            cur.executemany("INSERT INTO user_roles (user_id, role_id, created_by) VALUES (%s, %s, %s)",
+                            [(user_id, role_id, created_by) for role_id in role_ids])
+        conn.commit()
+        return {"message": "Đã thêm nhân viên và tạo tài khoản.", "mes_user_id": user_id, "employee_code": employee_code}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        cur.close()
+        conn.close()
+
+
+def set_password(employee_code: str, password_hash: str, updated_by: str | None):
+    conn = get_vcc_plastics_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE mes_users SET password_hash = %s, password_changed_at = NOW(), updated_by = %s WHERE TRIM(employee_code) = %s",
+            (password_hash, updated_by, employee_code.strip()),
+        )
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Không tìm thấy người dùng VCC Plastics.")
+        conn.commit()
+        return {"message": "Đã đặt mật khẩu.", "employee_code": employee_code}
     finally:
         cur.close()
         conn.close()
