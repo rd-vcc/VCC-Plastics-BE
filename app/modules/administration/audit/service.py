@@ -27,7 +27,8 @@ ACTION_WORDS = {"approve", "reject", "submit", "start", "stop", "hold", "resume"
                 "start_investigation", "submit_verify", "hold_wo", "scrap", "move", "install", "remove", "adjust", "copy", "duplicate", "new-revision", "reserve", "issue",
                 "return", "reverse", "backflush", "confirm", "reschedule", "split", "unschedule", "schedule", "request_calibration", "report_broken", "repaired",
                 "out_of_service", "return_to_service", "status", "favorites"}
-SKIP_PATHS = ("/api/auth/login", "/api/auth/logout", "/health", "/uploads", "/docs", "/openapi")
+SKIP_PATHS = ("/api/auth/login", "/api/auth/logout", "/health", "/uploads", "/docs", "/openapi",
+              "/api/notifications")   # read marks are per-user housekeeping, not business changes
 SENSITIVE = re.compile(r"pass(word)?|token|secret", re.I)
 _roles_cache = {"at": 0.0, "map": {}}
 

@@ -33,6 +33,8 @@ Sau do seed permission co dinh:
 
 ```powershell
 python -m scripts.seed_permissions
+python -m scripts.seed_roles        # 8 vai tro chuan theo vi tri; --reset de dua quyen ve mac dinh
+python -m scripts.create_notification_tables   # thong bao trong ung dung theo quy trinh san xuat
 ```
 
 Chay BE:

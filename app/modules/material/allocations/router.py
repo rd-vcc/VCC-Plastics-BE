@@ -236,7 +236,10 @@ def auto(payload: AutoIn):
 
 @router.post("/{allocation_id}/issue")
 def issue_allocation(allocation_id: int, payload: IssueIn):
-    return _run_write(lambda cur: issue(cur, allocation_id, payload.qty, payload.machine_id, payload.actor or "SYSTEM", payload.version) or {"message": "Material issued to machine."})
+    result = _run_write(lambda cur: issue(cur, allocation_id, payload.qty, payload.machine_id, payload.actor or "SYSTEM", payload.version) or {"message": "Material issued to machine."})
+    from app.modules.notifications import events
+    events.material_issued(allocation_id, payload.actor)
+    return result
 
 
 @router.post("/{allocation_id}/release")

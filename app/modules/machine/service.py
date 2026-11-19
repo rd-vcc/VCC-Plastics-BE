@@ -210,6 +210,15 @@ def raise_alarm(cur, equipment_id, message, priority="MEDIUM", source="PLC", ala
         from app.modules.maintenance.service import request_from_alarm
         try:
             request_from_alarm(cur, alarm_id)
+            # The request is not committed yet (caller commits), so read it on this cursor and notify Maintenance now.
+            cur.execute("""SELECT r.id, r.request_no, r.short_description, e.equipment_code FROM maintenance_requests r
+                           LEFT JOIN equipment e ON e.id = %s WHERE r.alarm_id=%s ORDER BY r.id DESC LIMIT 1""", (equipment_id, alarm_id))
+            req = cur.fetchone()
+            if req:
+                from app.modules.notifications.service import notify
+                notify("MAINT_REQUESTED", f"{req['equipment_code'] or ''}: {req['short_description'] or message}".strip(": "),
+                       ref_type="MAINT_REQUEST", ref_id=req["id"], ref_code=req["request_no"], actor="SYSTEM", severity="CRITICAL",
+                       title="Cảnh báo nghiêm trọng, đã tạo yêu cầu bảo trì", link=f"/maintenance-management/requests?request={req['id']}")
         except Exception:  # never block the alarm itself
             pass
     return alarm_id

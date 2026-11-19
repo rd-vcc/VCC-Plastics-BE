@@ -16,6 +16,7 @@ OEE = Availability x Performance x Quality:
 """
 
 import math
+from app.core.employee_names import employee_label
 from datetime import datetime
 
 from fastapi import HTTPException
@@ -113,8 +114,9 @@ def start(cur, wo_id, operator, leader, actor, version):
     _bump(cur, wo, version, "status='IN_PRODUCTION', started_at=COALESCE(started_at, NOW()), operator_code=%s, leader_code=%s, shift_id=%s, last_output_at=NOW()",
           (operator, leader, shift["id"] if shift else None), actor)
     wo.update(operator_code=operator, shift_id=shift["id"] if shift else None)
-    log_event(cur, wo, "START", actor, reason_text=f"Operator {operator}" + (f", leader {leader}" if leader else ""))
-    write_audit(cur, "WORK_ORDER", wo_id, "START", "RELEASED", "IN_PRODUCTION", actor, f"Operator {operator}")
+    operator_text, leader_text = employee_label(cur, operator), employee_label(cur, leader)
+    log_event(cur, wo, "START", actor, reason_text=f"Operator {operator_text}" + (f", leader {leader_text}" if leader else ""))
+    write_audit(cur, "WORK_ORDER", wo_id, "START", "RELEASED", "IN_PRODUCTION", actor, f"Operator {operator_text}")
     _set_machine(cur, wo["machine_id"], "RUNNING", wo_id, f"{wo['wo_no']} started")
     mold_service.on_wo_start(cur, wo, operator, actor)
     quality_service.on_wo_start(cur, wo, actor)

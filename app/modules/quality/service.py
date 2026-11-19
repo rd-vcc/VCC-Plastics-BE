@@ -947,7 +947,10 @@ def raise_alert(cur, key, kind, severity, message, ref_type=None, ref_id=None, r
         return row["id"]
     cur.execute("""INSERT INTO quality_alerts (alert_key, kind, severity, message, ref_type, ref_id, ref_code) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                 (key, kind, severity, message[:500], ref_type, ref_id, ref_code))
-    return cur.lastrowid
+    alert_id = cur.lastrowid
+    from app.modules.notifications import events   # new HIGH / CRITICAL alert -> QC and management
+    events.quality_alert_raised(alert_id, kind, severity, message, ref_code)
+    return alert_id
 
 
 def alert_action(cur, alert_id, action, data, actor):

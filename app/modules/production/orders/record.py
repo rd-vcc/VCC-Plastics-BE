@@ -9,6 +9,7 @@ status / audit history. Metrics that need data the MES does not collect yet
 
 from datetime import datetime
 
+from app.core.employee_names import attach_employee_names
 from app.modules.production.orders.service import decorate, get_order
 from app.modules.material.requirements.service import _bom_rows
 from app.modules.production.planning.service import duration_seconds
@@ -59,6 +60,9 @@ def _timeline(order, history):
         if status == "CLOSED" and not at and order["closed_at"]:
             at, actor = order["closed_at"], order["closed_by"]
         reached = current != "CANCELLED" and STATUS_RANK[status] <= STATUS_RANK.get(current, -1)
+        if not reached and current != "CANCELLED":
+            # a status the order left again (e.g. moved back to Scheduling) is not shown as reached
+            at = actor = None
         steps.append({"status": status, "at": at, "actor": actor, "done": reached and status != current,
                       "current": status == current, "skipped": reached and not at})
     if current == "CANCELLED":
@@ -202,8 +206,13 @@ def build_record(cur, order_id: int):
         "unplanned_qty": order["unplanned_qty"],
     }
 
+    timeline = _timeline(order, history)
+    attach_employee_names(cur, [order], ["created_by", "updated_by"])
+    attach_employee_names(cur, timeline + activity, ["actor"])
+    attach_employee_names(cur, notes, ["created_by"])
+
     return {
-        "order": order, "timeline": _timeline(order, history), "output": output, "quality": quality, "material": material,
+        "order": order, "timeline": timeline, "output": output, "quality": quality, "material": material,
         "performance": performance, "machines": list(machines.values()), "molds": list(molds.values()),
         "work_orders": work_orders, "wo_summary": wo_summary, "schedule": schedule,
         "notes": notes, "activity": activity, "server_time": now,

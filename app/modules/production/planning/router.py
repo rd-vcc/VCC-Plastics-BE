@@ -79,7 +79,25 @@ def _compute_board(cur, plan, area_id=None):
         machine_ids = {m["id"] for m in ctx["machines"]}
         items = [i for i in items if i["machine_id"] in machine_ids]
     others = load_scheduled_between(cur, ctx["window_start"] - timedelta(days=1), ctx["window_end"] + timedelta(days=1), plan["id"])
-    return ctx, items, others, build_board(ctx, items, load_backlog(cur), others, datetime.now())
+    board = build_board(ctx, items, load_backlog(cur), others, datetime.now())
+    _add_hourly_actual(cur, board, [i["id"] for i in items], ctx["window_start"], ctx["window_end"])
+    return ctx, items, others, board
+
+
+def _add_hourly_actual(cur, board, wo_ids, start, end):
+    """Good pieces reported per hour (Production Execution logs) for the plan's work orders."""
+    if not wo_ids or not board.get("hourly"):
+        return
+    marks = ",".join(["%s"] * len(wo_ids))
+    cur.execute(
+        f"""SELECT event_at, good_qty FROM production_execution_logs
+            WHERE work_order_id IN ({marks}) AND event_type IN ('OUTPUT','REJECT','QTY_ADJUST') AND event_at >= %s AND event_at < %s""",
+        (*wo_ids, start, end))
+    for row in cur.fetchall():
+        for slot in board["hourly"]:
+            if slot["start"] <= row["event_at"] < slot["end"]:
+                slot["actual_qty"] += int(row["good_qty"] or 0)
+                break
 
 
 def _validation_detail(board):
@@ -334,7 +352,10 @@ def reopen_plan(plan_id: int, payload: PlanAction):
 
 @router.post("/plans/{plan_id}/publish")
 def publish_plan(plan_id: int, payload: PlanAction):
-    return _transition_plan(plan_id, payload, "CONFIRMED", "PUBLISHED", "PUBLISH", validate=True)
+    result = _transition_plan(plan_id, payload, "CONFIRMED", "PUBLISHED", "PUBLISH", validate=True)
+    from app.modules.notifications import events
+    events.plan_published(plan_id, payload.actor)
+    return result
 
 
 @router.get("/plans/{plan_id}/audit-log")

@@ -10,6 +10,7 @@ Chain used everywhere:
 - Drying and shipment are not recorded by the MES yet: shown as "not integrated", never invented.
 """
 
+import re
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -75,7 +76,9 @@ def sync_lots(cur, wo_id=None):
     today_key = (production_date_of(now, cur_shift), cur_shift["id"] if cur_shift else None)
     for (wid, pdate, sid), g in groups.items():
         r = g["row"]
-        letter = (g["shift"]["shift_code"].split("-")[1] if g["shift"] and "-" in g["shift"]["shift_code"] else "X")[:2]
+        # shift code "A" or "SHIFT-A" -> "A"; no matching shift -> "X"
+        letter = re.sub(r"[^A-Z0-9]", "", str(g["shift"]["shift_code"]).split("-")[-1].upper())[:3] if g["shift"] else ""
+        letter = letter or "X"
         lot_no = f"PL-{pdate:%y%m%d}-{wid:04d}-{letter}"
         status = "OPEN" if r["status"] in ("IN_PRODUCTION", "ON_HOLD") and (pdate, sid) == today_key else "CLOSED"
         cur.execute("""INSERT INTO product_lots (lot_no, work_order_id, product_id, production_date, shift_id, machine_id, mold_id, operator_code, good_qty,

@@ -1,18 +1,16 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.process_parameter_standards.schemas import (
-    ActionRequest,
     CopyStandardRequest,
-    NewRevisionCreate,
-    RejectRequest,
     RevisionUpdate,
     StandardCreate,
+    StandardStatusUpdate,
 )
 from app.modules.master_data.process_parameter_standards.service import (
     check_duplicate_code,
     current_revision_row,
-    get_revision,
     get_standard,
     load_parameters,
     replace_parameters,
@@ -47,6 +45,7 @@ def statistics():
             SELECT
               COUNT(*) total_standards,
               SUM(cr.status='ACTIVE') active,
+              SUM(cr.status<>'ACTIVE') inactive,
               COUNT(DISTINCT cr.product_id) products,
               COUNT(DISTINCT cr.process) processes,
               COUNT(DISTINCT cr.machine_type_id) machine_types
@@ -153,6 +152,8 @@ def standard_detail(standard_id: int, revision_id: int | None = None):
                     if extra:
                         revision = {**revision, **extra}
         parameters = load_parameters(cur, revision["id"]) if revision else []
+        if revision:
+            revision = attach_employee_names(cur, [revision], ["created_by", "updated_by"])[0]
         return {**standard, "revisions": revisions, "revision": revision, "parameters": parameters}
     finally:
         cur.close(); conn.close()
@@ -167,9 +168,27 @@ def audit_log(standard_id: int):
             "SELECT * FROM process_parameter_standard_audit_log WHERE standard_id=%s ORDER BY acted_at DESC, id DESC",
             (standard_id,),
         )
-        return cur.fetchall()
+        return attach_employee_names(cur, cur.fetchall(), ["actor"])
     finally:
         cur.close(); conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Writes. A process parameter standard is configuration: it takes effect as soon as it is saved
+# (no submit / approve / activate). Machine monitoring reads the active standard live and keeps no
+# reference to it, so edits are applied in place; every change is recorded in the audit log.
+# ---------------------------------------------------------------------------
+
+def _insert_revision(cur, standard_id: int, data, actor):
+    cur.execute(
+        """INSERT INTO process_parameter_standard_revisions
+           (standard_id, revision_no, standard_name, product_id, mold_id, machine_type_id, material_id,
+            process, effective_date, remark, status, created_by)
+           VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s)""",
+        (standard_id, data["standard_name"], data["product_id"], data["mold_id"], data["machine_type_id"],
+         data["material_id"], data["process"], data["effective_date"], data["remark"], actor),
+    )
+    return cur.lastrowid
 
 
 @router.post("/standards", status_code=201)
@@ -177,22 +196,11 @@ def create_standard(payload: StandardCreate):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         check_duplicate_code(cur, payload.standard_code)
-        cur.execute(
-            "INSERT INTO process_parameter_standards (standard_code, created_by) VALUES (%s,%s)",
-            (payload.standard_code, payload.created_by),
-        )
+        cur.execute("INSERT INTO process_parameter_standards (standard_code, created_by) VALUES (%s,%s)", (payload.standard_code, payload.created_by))
         standard_id = cur.lastrowid
-        cur.execute(
-            """INSERT INTO process_parameter_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, mold_id, machine_type_id, material_id,
-                process, effective_date, remark, status, created_by)
-               VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (standard_id, payload.standard_name, payload.product_id, payload.mold_id, payload.machine_type_id,
-             payload.material_id, payload.process, payload.effective_date, payload.remark, payload.created_by),
-        )
-        revision_id = cur.lastrowid
+        revision_id = _insert_revision(cur, standard_id, payload.model_dump(), payload.created_by)
         replace_parameters(cur, revision_id, payload.parameters, payload.created_by)
-        write_audit(cur, standard_id, revision_id, "CREATE", None, "DRAFT", payload.created_by)
+        write_audit(cur, standard_id, revision_id, "CREATE", None, "ACTIVE", payload.created_by)
         conn.commit()
         return {"message": "Process parameter standard created successfully.", "id": standard_id, "revision_id": revision_id}
     except HTTPException:
@@ -203,29 +211,28 @@ def create_standard(payload: StandardCreate):
         cur.close(); conn.close()
 
 
-@router.put("/standards/{standard_id}/revisions/{revision_id}")
-def update_revision(standard_id: int, revision_id: int, payload: RevisionUpdate):
+@router.put("/standards/{standard_id}")
+def update_standard(standard_id: int, payload: RevisionUpdate):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only a Draft revision can be edited. Create a new revision instead.")
+        current = current_revision_row(cur, standard_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="Revision not found.")
         cur.execute(
             """UPDATE process_parameter_standard_revisions
                SET standard_name=%s, product_id=%s, mold_id=%s, machine_type_id=%s, material_id=%s,
                    process=%s, effective_date=%s, remark=%s, updated_by=%s, version=version+1
                WHERE id=%s AND version=%s""",
-            (payload.standard_name, payload.product_id, payload.mold_id, payload.machine_type_id,
-             payload.material_id, payload.process, payload.effective_date, payload.remark,
-             payload.updated_by, revision_id, payload.version),
+            (payload.standard_name, payload.product_id, payload.mold_id, payload.machine_type_id, payload.material_id,
+             payload.process, payload.effective_date, payload.remark, payload.updated_by, current["id"], payload.version),
         )
         if cur.rowcount == 0:
-            raise HTTPException(status_code=409, detail="This revision was changed by another user. Reload and try again.")
-        replace_parameters(cur, revision_id, payload.parameters, payload.updated_by)
-        write_audit(cur, standard_id, revision_id, "UPDATE", "DRAFT", "DRAFT", payload.updated_by)
+            raise HTTPException(status_code=409, detail="This standard was changed by another user. Reload and try again.")
+        replace_parameters(cur, current["id"], payload.parameters, payload.updated_by)
+        write_audit(cur, standard_id, current["id"], "UPDATE", current["status"], current["status"], payload.updated_by)
         conn.commit()
-        return {"message": "Revision updated successfully.", "version": payload.version + 1}
+        return {"message": "Process parameter standard updated successfully."}
     except HTTPException:
         conn.rollback(); raise
     except Exception as exc:
@@ -234,179 +241,20 @@ def update_revision(standard_id: int, revision_id: int, payload: RevisionUpdate)
         cur.close(); conn.close()
 
 
-@router.post("/standards/{standard_id}/revisions", status_code=201)
-def create_new_revision(standard_id: int, payload: NewRevisionCreate):
+@router.patch("/standards/{standard_id}/status")
+def set_standard_status(standard_id: int, payload: StandardStatusUpdate):
+    """Active ↔ inactive (stored as ACTIVE / OBSOLETE on the current revision)."""
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        source = get_revision(cur, payload.source_revision_id, standard_id)
-        cur.execute(
-            "SELECT COUNT(*) total FROM process_parameter_standard_revisions WHERE standard_id=%s AND status IN ('DRAFT','PENDING_APPROVAL')",
-            (standard_id,),
-        )
-        if cur.fetchone()["total"]:
-            raise HTTPException(status_code=409, detail="This standard already has an open Draft or Pending Approval revision.")
-        cur.execute("SELECT COALESCE(MAX(revision_no),0) AS max_no FROM process_parameter_standard_revisions WHERE standard_id=%s", (standard_id,))
-        next_no = cur.fetchone()["max_no"] + 1
-        cur.execute(
-            """INSERT INTO process_parameter_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, mold_id, machine_type_id, material_id,
-                process, effective_date, remark, status, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (standard_id, next_no, source["standard_name"], source["product_id"], source["mold_id"],
-             source["machine_type_id"], source["material_id"], source["process"], source["effective_date"],
-             source["remark"], payload.created_by),
-        )
-        new_revision_id = cur.lastrowid
-        parameters = load_parameters(cur, source["id"])
-        cur.executemany(
-            """INSERT INTO process_parameter_standard_items
-               (revision_id, parameter_name, min_value, target_value, max_value, unit, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-            [
-                (new_revision_id, p["parameter_name"], p["min_value"], p["target_value"], p["max_value"],
-                 p["unit"], p["sort_order"], payload.created_by)
-                for p in parameters
-            ],
-        ) if parameters else None
-        write_audit(cur, standard_id, new_revision_id, "NEW_REVISION", source["status"], "DRAFT", payload.created_by,
-                    remark=f"Copied from revision {source['revision_no']}")
+        current = current_revision_row(cur, standard_id)
+        target = "ACTIVE" if payload.status == "ACTIVE" else "OBSOLETE"
+        if current["status"] != target:
+            cur.execute("UPDATE process_parameter_standard_revisions SET status=%s, updated_by=%s, version=version+1 WHERE id=%s",
+                        (target, payload.actor, current["id"]))
+            write_audit(cur, standard_id, current["id"], "ACTIVATE" if target == "ACTIVE" else "OBSOLETE", current["status"], target, payload.actor)
         conn.commit()
-        return {"message": "New revision created successfully.", "id": new_revision_id, "revision_no": next_no}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/submit")
-def submit_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only a Draft revision can be submitted for approval.")
-        cur.execute("SELECT COUNT(*) total FROM process_parameter_standard_items WHERE revision_id=%s", (revision_id,))
-        if not cur.fetchone()["total"]:
-            raise HTTPException(status_code=400, detail="Add at least one parameter item before submitting.")
-        cur.execute(
-            """UPDATE process_parameter_standard_revisions
-               SET status='PENDING_APPROVAL', submitted_by=%s, submitted_at=NOW(), version=version+1
-               WHERE id=%s""",
-            (payload.actor, revision_id),
-        )
-        write_audit(cur, standard_id, revision_id, "SUBMIT", "DRAFT", "PENDING_APPROVAL", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Submitted for approval."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/approve")
-def approve_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only a revision Pending Approval can be approved.")
-        cur.execute(
-            """UPDATE process_parameter_standard_revisions
-               SET status='APPROVED', approved_by=%s, approved_at=NOW(), version=version+1
-               WHERE id=%s""",
-            (payload.actor, revision_id),
-        )
-        write_audit(cur, standard_id, revision_id, "APPROVE", "PENDING_APPROVAL", "APPROVED", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision approved."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/reject")
-def reject_revision(standard_id: int, revision_id: int, payload: RejectRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only a revision Pending Approval can be rejected.")
-        cur.execute(
-            "UPDATE process_parameter_standard_revisions SET status='DRAFT', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "REJECT", "PENDING_APPROVAL", "DRAFT", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision rejected and returned to Draft."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/activate")
-def activate_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "APPROVED":
-            raise HTTPException(status_code=409, detail="Only an Approved revision can be activated.")
-        cur.execute(
-            "SELECT id FROM process_parameter_standard_revisions WHERE standard_id=%s AND status='ACTIVE' AND id<>%s",
-            (standard_id, revision_id),
-        )
-        previously_active = cur.fetchall()
-        for row in previously_active:
-            cur.execute(
-                "UPDATE process_parameter_standard_revisions SET status='OBSOLETE', version=version+1 WHERE id=%s",
-                (row["id"],),
-            )
-            write_audit(cur, standard_id, row["id"], "OBSOLETE", "ACTIVE", "OBSOLETE", payload.actor,
-                        remark=f"Superseded by revision {revision['revision_no']}")
-        cur.execute(
-            "UPDATE process_parameter_standard_revisions SET status='ACTIVE', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "ACTIVATE", "APPROVED", "ACTIVE", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision activated."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/obsolete")
-def obsolete_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "ACTIVE":
-            raise HTTPException(status_code=409, detail="Only an Active revision can be made Obsolete.")
-        cur.execute(
-            "UPDATE process_parameter_standard_revisions SET status='OBSOLETE', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "OBSOLETE", "ACTIVE", "OBSOLETE", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision marked Obsolete."}
+        return {"message": "Status updated."}
     except HTTPException:
         conn.rollback(); raise
     except Exception as exc:
@@ -424,34 +272,19 @@ def copy_standard(standard_id: int, payload: CopyStandardRequest):
         if not source:
             raise HTTPException(status_code=400, detail="Source standard has no revision to copy.")
         check_duplicate_code(cur, payload.new_standard_code)
-        cur.execute(
-            "INSERT INTO process_parameter_standards (standard_code, created_by) VALUES (%s,%s)",
-            (payload.new_standard_code, payload.created_by),
-        )
+        cur.execute("INSERT INTO process_parameter_standards (standard_code, created_by) VALUES (%s,%s)", (payload.new_standard_code, payload.created_by))
         new_standard_id = cur.lastrowid
-        cur.execute(
-            """INSERT INTO process_parameter_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, mold_id, machine_type_id, material_id,
-                process, effective_date, remark, status, created_by)
-               VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (new_standard_id, source["standard_name"], source["product_id"], source["mold_id"],
-             source["machine_type_id"], source["material_id"], source["process"], source["effective_date"],
-             source["remark"], payload.created_by),
-        )
-        new_revision_id = cur.lastrowid
+        new_revision_id = _insert_revision(cur, new_standard_id, source, payload.created_by)
         parameters = load_parameters(cur, source["id"])
-        cur.executemany(
-            """INSERT INTO process_parameter_standard_items
-               (revision_id, parameter_name, min_value, target_value, max_value, unit, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-            [
-                (new_revision_id, p["parameter_name"], p["min_value"], p["target_value"], p["max_value"],
-                 p["unit"], p["sort_order"], payload.created_by)
-                for p in parameters
-            ],
-        ) if parameters else None
-        write_audit(cur, new_standard_id, new_revision_id, "CREATE", None, "DRAFT", payload.created_by,
-                    remark=f"Copied from standard {standard_id}")
+        if parameters:
+            cur.executemany(
+                """INSERT INTO process_parameter_standard_items
+                   (revision_id, parameter_name, min_value, target_value, max_value, unit, sort_order, created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [(new_revision_id, p["parameter_name"], p["min_value"], p["target_value"], p["max_value"], p["unit"], p["sort_order"], payload.created_by)
+                 for p in parameters],
+            )
+        write_audit(cur, new_standard_id, new_revision_id, "CREATE", None, "ACTIVE", payload.created_by, remark=f"Copied from standard {standard_id}")
         conn.commit()
         return {"message": "Standard copied successfully.", "id": new_standard_id, "revision_id": new_revision_id}
     except HTTPException:
@@ -467,14 +300,8 @@ def delete_standard(standard_id: int):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        cur.execute("SELECT COUNT(*) total FROM process_parameter_standard_revisions WHERE standard_id=%s", (standard_id,))
-        revision_count = cur.fetchone()["total"]
-        cur.execute("SELECT COUNT(*) total FROM process_parameter_standard_audit_log WHERE standard_id=%s", (standard_id,))
-        audit_count = cur.fetchone()["total"]
-        cur.execute("SELECT status FROM process_parameter_standard_revisions WHERE standard_id=%s", (standard_id,))
-        statuses = [row["status"] for row in cur.fetchall()]
-        if revision_count != 1 or statuses != ["DRAFT"] or audit_count > 1:
-            raise HTTPException(status_code=409, detail="This standard has activity; set it Obsolete instead of deleting.")
+        # revisions first (their FK is RESTRICT); items cascade, audit rows follow the standard
+        cur.execute("DELETE FROM process_parameter_standard_revisions WHERE standard_id=%s", (standard_id,))
         cur.execute("DELETE FROM process_parameter_standards WHERE id=%s", (standard_id,))
         conn.commit()
         return {"message": "Process parameter standard deleted successfully."}

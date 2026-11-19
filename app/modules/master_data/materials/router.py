@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.materials.schemas import (
     MaterialCreate, MaterialFieldDefinitionCreate, MaterialFieldDefinitionUpdate,
     MaterialNodeCreate, MaterialNodeMove,
@@ -243,7 +244,7 @@ def list_nodes(keyword: str | None=None, node_type_id: int | None=None,
                FROM material_nodes n JOIN material_node_types t ON t.id=n.node_type_id"""
         if conditions: sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY n.level_no,n.sort_order,n.name,n.id"
-        cur.execute(sql,tuple(params)); rows=cur.fetchall()
+        cur.execute(sql,tuple(params)); rows=attach_employee_names(cur,cur.fetchall(),["created_by","updated_by"])
         return _tree(rows) if tree and not keyword and parent_id is None else rows
     finally: cur.close(); conn.close()
 
@@ -377,7 +378,7 @@ def material_detail(material_id:int):
         row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Material not found.")
         row["custom_fields"] = _load_custom_fields(cur, material_id)
-        return row
+        return attach_employee_names(cur,[row],["created_by","updated_by"])[0]
     finally:cur.close();conn.close()
 
 

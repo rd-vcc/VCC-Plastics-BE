@@ -3,6 +3,7 @@ from datetime import timedelta
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.measuring_equipment.schemas import (
     CalibrationRecordCreate,
     EquipmentCreate,
@@ -238,7 +239,7 @@ def get_equipment_detail(equipment_id: int):
             (equipment_id,),
         )
         equipment["recent_calibrations"] = cur.fetchall()
-        return equipment
+        return attach_employee_names(cur, [equipment], ["created_by", "updated_by"])[0]
     finally:
         cur.close()
         conn.close()
@@ -279,13 +280,13 @@ def update_equipment(equipment_id: int, payload: EquipmentUpdate):
         cur.execute(
             """UPDATE measuring_equipment SET equipment_code=%s,equipment_name=%s,equipment_type_id=%s,
                factory_node_id=%s,manufacturer=%s,model=%s,serial_number=%s,measurement_range=%s,
-               resolution=%s,accuracy=%s,calibration_cycle_days=%s,status=%s,description=%s,
+               resolution=%s,accuracy=%s,calibration_cycle_days=%s,description=%s,
                image_url=%s,updated_by=%s,version=version+1
                WHERE id=%s AND version=%s""",
             (payload.equipment_code, payload.equipment_name, payload.equipment_type_id,
              payload.factory_node_id, payload.manufacturer, payload.model, payload.serial_number,
              payload.measurement_range, payload.resolution, payload.accuracy,
-             payload.calibration_cycle_days, payload.status, payload.description,
+             payload.calibration_cycle_days, payload.description,
              payload.image_url, payload.updated_by, equipment_id, payload.version),
         )
         if cur.rowcount == 0:
@@ -297,7 +298,15 @@ def update_equipment(equipment_id: int, payload: EquipmentUpdate):
 @router.patch("/equipment/{equipment_id}/status")
 def update_equipment_status(equipment_id: int, payload: EquipmentStatusUpdate):
     def action(cur):
-        get_record(cur, "measuring_equipment", equipment_id, "Equipment")
+        current = get_record(cur, "measuring_equipment", equipment_id, "Equipment")
+        # master data only switches the record on / off; in use / out of service come from Quality
+        if payload.status not in ("INACTIVE", "AVAILABLE"):
+            raise HTTPException(status_code=400, detail="In use / out of service are set by Quality (calibration, repair), not by master data.")
+        if payload.status == "AVAILABLE":
+            if current.get("status") != "INACTIVE":
+                return {"message": "Equipment is already active.", "version": payload.version}
+            if current.get("quality_state") == "SCRAPPED":
+                raise HTTPException(status_code=409, detail="The equipment is scrapped and cannot be reactivated.")
         cur.execute(
             """UPDATE measuring_equipment SET status=%s, updated_by=%s, version=version+1
                WHERE id=%s AND version=%s""",

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.production_tools.schemas import (
     ProductionToolFieldDefinitionCreate, ProductionToolFieldDefinitionUpdate,
     ProductionToolNodeCreate, ProductionToolNodeMove,
@@ -243,7 +244,7 @@ def list_nodes(keyword: str | None=None, node_type_id: int | None=None,
                FROM production_tool_nodes n JOIN production_tool_node_types t ON t.id=n.node_type_id"""
         if conditions: sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY n.level_no,n.sort_order,n.name,n.id"
-        cur.execute(sql,tuple(params)); rows=cur.fetchall()
+        cur.execute(sql,tuple(params)); rows=attach_employee_names(cur,cur.fetchall(),["created_by","updated_by"])
         return _tree(rows) if tree and not keyword and parent_id is None else rows
     finally: cur.close(); conn.close()
 
@@ -377,7 +378,7 @@ def tool_detail(tool_id:int):
         row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Production tool not found.")
         row["custom_fields"] = _load_custom_fields(cur, tool_id)
-        return row
+        return attach_employee_names(cur,[row],["created_by","updated_by"])[0]
     finally:cur.close();conn.close()
 
 
@@ -416,14 +417,16 @@ def update_tool(tool_id:int,payload:ToolUpdate):
     try:
         get_tool(cur,tool_id)
         if payload.production_tool_node_id:get_node(cur,payload.production_tool_node_id,True)
+        # status (in use / in maintenance / out of service) and calibration dates are live data written by
+        # Maintenance (work orders, calibration), so the master data edit leaves them untouched.
         cur.execute("""UPDATE production_tools SET tool_name=%s,production_tool_node_id=%s,tool_type=%s,
-          tool_category=%s,manufacturer=%s,model=%s,serial_number=%s,assigned_process=%s,status=%s,
-          calibration_required=%s,calibration_due_date=%s,last_calibration_date=%s,
+          tool_category=%s,manufacturer=%s,model=%s,serial_number=%s,assigned_process=%s,
+          calibration_required=%s,
           calibration_interval_days=%s,measurement_range=%s,measurement_resolution=%s,description=%s,
           image_url=%s,updated_by=%s,version=version+1 WHERE id=%s AND version=%s""",
           (payload.tool_name,payload.production_tool_node_id,payload.tool_type,payload.tool_category,
-           payload.manufacturer,payload.model,payload.serial_number,payload.assigned_process,payload.status,
-           payload.calibration_required,payload.calibration_due_date,payload.last_calibration_date,
+           payload.manufacturer,payload.model,payload.serial_number,payload.assigned_process,
+           payload.calibration_required,
            payload.calibration_interval_days,payload.measurement_range,payload.measurement_resolution,
            payload.description,payload.image_url,payload.updated_by,tool_id,payload.version))
         if cur.rowcount == 0:
@@ -439,7 +442,14 @@ def update_tool(tool_id:int,payload:ToolUpdate):
 def update_tool_status(tool_id:int,payload:ToolStatusUpdate):
     conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
     try:
-        get_tool(cur,tool_id)
+        current=get_tool(cur,tool_id)
+        # master data only switches the record on / off; the other states belong to Maintenance
+        if payload.status not in ("INACTIVE","AVAILABLE"):
+            raise HTTPException(400,"In use / maintenance / out of service are set by Maintenance, not by master data.")
+        if payload.status=="INACTIVE" and current.get("status")=="IN_MAINTENANCE":
+            raise HTTPException(409,"The tool is under maintenance. Close its maintenance work order first.")
+        if payload.status=="AVAILABLE" and current.get("status")!="INACTIVE":
+            return {"message":"Production tool is already active.","version":payload.version}
         cur.execute("UPDATE production_tools SET status=%s,updated_by=%s,version=version+1 WHERE id=%s AND version=%s",
                     (payload.status,payload.updated_by,tool_id,payload.version))
         if cur.rowcount == 0:

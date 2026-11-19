@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.material.inventory.schemas import (
     AdjustIn,
     HoldIn,
@@ -225,7 +226,9 @@ def lot_detail(lot_id: int):
                LEFT JOIN equipment e ON e.id = t.machine_id
                WHERE t.lot_id=%s ORDER BY t.acted_at, t.id""",
             (lot_id,))
-        return {**lot, "transactions": cur.fetchall()}
+        transactions = attach_employee_names(cur, cur.fetchall(), ["actor"])
+        lot = attach_employee_names(cur, [lot], ["iqc_by", "created_by"])[0]
+        return {**lot, "transactions": transactions}
     return _read(action)
 
 
@@ -390,7 +393,7 @@ def recent_transactions(limit: int = Query(default=50, ge=1, le=1000), lot_id: i
                 LEFT JOIN equipment e ON e.id = t.machine_id
                 {where} ORDER BY t.acted_at DESC, t.id DESC LIMIT %s""",
             params)
-        return cur.fetchall()
+        return attach_employee_names(cur, cur.fetchall(), ["actor"])
     return _read(action)
 
 

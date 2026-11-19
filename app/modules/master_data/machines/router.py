@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.machines.schemas import (
     EquipmentCreate,
     EquipmentGroupCreate,
@@ -310,6 +311,7 @@ def get_equipment_detail(equipment_id: int):
             (equipment_id, equipment["equipment_type_id"]),
         )
         equipment["specifications"] = cur.fetchall()
+        attach_employee_names(cur, equipment, ["created_by", "updated_by"])
         return equipment
     finally:
         cur.close()
@@ -355,13 +357,13 @@ def update_equipment(equipment_id: int, payload: EquipmentUpdate):
             """UPDATE equipment SET equipment_code=%s,equipment_name=%s,equipment_type_id=%s,
                equipment_group_id=%s,factory_node_id=%s,manufacturer=%s,model=%s,
                serial_number=%s,manufacturing_year=%s,installation_date=%s,
-               commissioning_date=%s,image_url=%s,asset_status=%s,operational_status=%s,
+               commissioning_date=%s,image_url=%s,asset_status=%s,
                description=%s,updated_by=%s,version=version+1
                WHERE id=%s AND version=%s""",
             (code,payload.equipment_name,payload.equipment_type_id,payload.equipment_group_id,
              payload.factory_node_id,payload.manufacturer,payload.model,payload.serial_number,
              payload.manufacturing_year,payload.installation_date,payload.commissioning_date,
-             payload.image_url,payload.asset_status,payload.operational_status,payload.description,
+             payload.image_url,payload.asset_status,payload.description,
              payload.updated_by,equipment_id,payload.version),
         )
         if cur.rowcount == 0:
@@ -374,12 +376,18 @@ def update_equipment(equipment_id: int, payload: EquipmentUpdate):
 def update_equipment_status(equipment_id: int, payload: EquipmentStatusUpdate):
     def action(cur):
         current = get_record(cur, "equipment", equipment_id, "Equipment")
+        # Operational status is live data: it is written by machine signals, downtime and production
+        # through app.modules.machine.service.set_machine_status (keeps status history), never here.
+        if payload.operational_status and payload.operational_status != current["operational_status"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Operational status is not maintained in master data; it comes from machine signals, downtime and production (Machine Monitoring).",
+            )
         asset = payload.asset_status or current["asset_status"]
-        operational = payload.operational_status or current["operational_status"]
         cur.execute(
-            """UPDATE equipment SET asset_status=%s, operational_status=%s,
+            """UPDATE equipment SET asset_status=%s,
                updated_by=%s, version=version+1 WHERE id=%s AND version=%s""",
-            (asset, operational, payload.updated_by, equipment_id, payload.version),
+            (asset, payload.updated_by, equipment_id, payload.version),
         )
         if cur.rowcount == 0:
             raise HTTPException(status_code=409, detail="Equipment was changed by another user. Reload and try again.")

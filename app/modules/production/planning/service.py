@@ -348,14 +348,27 @@ def build_board(ctx, items, backlog, others, now: datetime):
         "planned_hours": round(machine_hours.get(m["id"], 0), 2),
     } for m in machines]
 
-    # ---- Capacity vs demand per hour (machine-hours) -------------------------
+    # ---- Capacity vs demand per hour (machine-hours, and PCS) -----------------
+    # PCS: planned = each work order's quantity spread evenly over its planned run; capacity = the shift's
+    # PCS capacity spread evenly over the window (None when nothing is scheduled to derive a rate from).
+    # Actual PCS per hour is added by the router from the execution logs.
     available_count = capacity_totals["available_machines"]
+    window_seconds = max((win_end - win_start).total_seconds(), 1)
     hourly, slot = [], win_start
     while slot < win_end:
         slot_end = min(slot + timedelta(hours=1), win_end)
         demand = sum(_overlap_seconds(i["planned_start"], i["planned_end"], slot, slot_end) for i in items if i["machine_id"]) / 3600
         slot_hours = (slot_end - slot).total_seconds() / 3600
-        hourly.append({"hour": _fmt_time(slot), "capacity": round(available_count * slot_hours, 2), "demand": round(demand, 2)})
+        planned_pcs = 0.0
+        for i in items:
+            run = (i["planned_end"] - i["planned_start"]).total_seconds() if i["planned_start"] and i["planned_end"] else 0
+            if run > 0:
+                planned_pcs += int(i["planned_qty"]) * _overlap_seconds(i["planned_start"], i["planned_end"], slot, slot_end) / run
+        capacity_pcs = total_capacity_qty * (slot_end - slot).total_seconds() / window_seconds if total_capacity_qty else None
+        hourly.append({"hour": _fmt_time(slot), "start": slot, "end": slot_end,
+                       "capacity": round(available_count * slot_hours, 2), "demand": round(demand, 2),
+                       "planned_qty": round(planned_pcs), "capacity_qty": round(capacity_pcs) if capacity_pcs is not None else None,
+                       "actual_qty": 0})
         slot = slot_end
 
     # ---- Material readiness --------------------------------------------------

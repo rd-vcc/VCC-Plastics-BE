@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import active_employees, attach_employee_names
+from app.modules.notifications import events
 from app.modules.production.execution import service as ex
 from app.modules.production.work_orders import service as wo_service
 from app.modules.production.work_orders.router import _system_status
@@ -103,7 +105,7 @@ def lookups():
                WHERE t.category='MACHINE' AND e.asset_status='ACTIVE' ORDER BY e.equipment_code""")
         machines = cur.fetchall()
         shifts = [{k: s[k] for k in ("id", "shift_code", "shift_name")} for s in load_shifts(cur)]
-        return {"reasons": reasons, "machines": machines, "shifts": shifts}
+        return {"reasons": reasons, "machines": machines, "shifts": shifts, "employees": active_employees(cur)}
     return _read(action)
 
 
@@ -185,6 +187,7 @@ def summary(business_date: date | None = None, machine_id: int | None = None, sh
         for w in today_items:
             if w["machine_code"] and w["metrics"]["availability_pct"] is not None:
                 machines[w["machine_code"]].append(w["metrics"]["availability_pct"])
+        attach_employee_names(cur, items, ["operator_code", "leader_code"])
         return {
             "items": items, "kpis": kpis, "trend": trend,
             "by_status": {s: sum(1 for w in items if w["status"] == s) for s in ("IN_PRODUCTION", "ON_HOLD", "RELEASED", "COMPLETED", "CLOSED")},
@@ -202,6 +205,8 @@ def detail(wo_id: int):
         now = datetime.now()
         w = decorate(row, now, load_shifts(cur))
         logs = ex.logs_of(cur, wo_id)
+        attach_employee_names(cur, [w], ["operator_code", "leader_code"])
+        attach_employee_names(cur, logs, ["actor"])
         return {**w, "metrics": ex.compute_metrics(w, logs, now), "readiness": ex.readiness(cur, row) if w["status"] == "RELEASED" else [],
                 "logs": list(reversed(logs))}
     return _read(action)
@@ -216,17 +221,23 @@ def _write(fn):
 
 @router.post("/{wo_id}/start")
 def start_wo(wo_id: int, p: StartIn):
-    return _write(lambda cur: ex.start(cur, wo_id, p.operator.strip(), (p.leader or "").strip() or None, p.actor, p.version))
+    result = _write(lambda cur: ex.start(cur, wo_id, p.operator.strip(), (p.leader or "").strip() or None, p.actor, p.version))
+    events.wo_started(wo_id, p.actor, p.operator.strip())
+    return result
 
 
 @router.post("/{wo_id}/output")
 def output_wo(wo_id: int, p: OutputIn):
-    return _write(lambda cur: ex.output(cur, wo_id, p.good, p.reject, p.reason_code_id, (p.reason or "").strip() or None, p.actor, p.version))
+    result = _write(lambda cur: ex.output(cur, wo_id, p.good, p.reject, p.reason_code_id, (p.reason or "").strip() or None, p.actor, p.version))
+    events.ng_reported(wo_id, p.reject, (p.reason or "").strip() or None, p.actor)
+    return result
 
 
 @router.post("/{wo_id}/reject")
 def reject_wo(wo_id: int, p: RejectIn):
-    return _write(lambda cur: ex.reject(cur, wo_id, p.qty, p.from_good, p.reason_code_id, p.reason.strip(), p.actor, p.version))
+    result = _write(lambda cur: ex.reject(cur, wo_id, p.qty, p.from_good, p.reason_code_id, p.reason.strip(), p.actor, p.version))
+    events.ng_reported(wo_id, p.qty, p.reason.strip(), p.actor)
+    return result
 
 
 @router.post("/{wo_id}/adjust")
@@ -236,7 +247,9 @@ def adjust_wo(wo_id: int, p: AdjustIn):
 
 @router.post("/{wo_id}/hold")
 def hold_wo(wo_id: int, p: HoldIn):
-    return _write(lambda cur: ex.hold(cur, wo_id, p.reason_code_id, p.reason.strip(), p.actor, p.version))
+    result = _write(lambda cur: ex.hold(cur, wo_id, p.reason_code_id, p.reason.strip(), p.actor, p.version))
+    events.wo_on_hold(wo_id, p.reason.strip(), p.actor)
+    return result
 
 
 @router.post("/{wo_id}/resume")
@@ -246,7 +259,9 @@ def resume_wo(wo_id: int, p: ActionIn):
 
 @router.post("/{wo_id}/end")
 def end_wo(wo_id: int, p: ActionIn):
-    return _write(lambda cur: ex.end(cur, wo_id, p.remark, p.actor, p.version))
+    result = _write(lambda cur: ex.end(cur, wo_id, p.remark, p.actor, p.version))
+    events.wo_completed(wo_id, p.actor)
+    return result
 
 
 @router.post("/{wo_id}/notes")

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.factory_structure.schemas import (
     FactoryNodeCreate,
     FactoryNodeTypeCreate,
@@ -495,7 +496,9 @@ def list_nodes(
         """
 
         cur.execute(sql, tuple(params))
-        return cur.fetchall()
+        rows = cur.fetchall()
+        attach_employee_names(cur, rows, ["created_by"])
+        return rows
     finally:
         cur.close()
         conn.close()
@@ -666,6 +669,72 @@ def update_node(
         conn.commit()
 
         return {"message": "Factory structure node updated."}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+    finally:
+        cur.close()
+        conn.close()
+
+
+# Tables that point at a structure node; a node still referenced cannot be deleted.
+NODE_REFERENCES = [
+    ("factory_structure_nodes", "parent_id", "child units"),
+    ("equipment", "factory_node_id", "equipment"),
+    ("measuring_equipment", "factory_node_id", "measuring equipment"),
+    ("material_locations", "factory_node_id", "material locations"),
+    ("production_orders", "factory_node_id", "production orders"),
+    ("production_plans", "factory_node_id", "production plans"),
+    ("shifts", "applicable_area_id", "shifts"),
+    ("calendar_days", "applicable_area_id", "calendar days"),
+    ("shift_pattern_assignments", "area_id", "shift pattern assignments"),
+]
+
+
+@router.delete("/nodes/{node_id}")
+def delete_node(node_id: int):
+    conn = get_vcc_plastics_connection()
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        get_node(cur, node_id)
+
+        usages = []
+        for table, column, label in NODE_REFERENCES:
+            try:
+                cur.execute(
+                    f"SELECT COUNT(*) AS total FROM {table} WHERE {column} = %s",
+                    (node_id,),
+                )
+            except Exception:  # table not present in this database
+                continue
+            total = cur.fetchone()["total"]
+            if total:
+                usages.append(f"{total} {label}")
+
+        if usages:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot delete this unit because it is still used by: "
+                    + ", ".join(usages)
+                    + "."
+                ),
+            )
+
+        cur.execute(
+            "DELETE FROM factory_structure_nodes WHERE id = %s",
+            (node_id,),
+        )
+        conn.commit()
+
+        return {"message": "Factory structure node deleted."}
     except HTTPException:
         conn.rollback()
         raise

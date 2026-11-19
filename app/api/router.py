@@ -49,6 +49,7 @@ from app.modules.traceability.router import router as traceability_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.reports.router import router as reports_router
 from app.modules.administration.audit.router import router as audit_router
+from app.modules.notifications.router import router as notifications_router
 
 api_router = APIRouter()
 
@@ -93,3 +94,4 @@ api_router.include_router(traceability_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(reports_router)
 api_router.include_router(audit_router)
+api_router.include_router(notifications_router)

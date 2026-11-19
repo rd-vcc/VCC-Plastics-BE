@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.material.inventory.service import CATEGORIES, load_settings, material_category
 from app.modules.material.usage.service import (
     USAGE_SELECT,
@@ -170,7 +171,7 @@ def summary(date_from: date | None = None, date_to: date | None = None, work_ord
         return {
             "kpis": kpis, "lines": lines, "trend": trend, "variance": variance, "top_materials": top,
             "by_category": {c: round(v, 3) for c, v in by_category.items()},
-            "recent": usages[:30], "settings": settings,
+            "recent": attach_employee_names(cur, usages[:30], ["actor"]), "settings": settings,
         }
     return _read(action)
 

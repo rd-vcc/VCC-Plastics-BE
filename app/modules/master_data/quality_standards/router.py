@@ -1,18 +1,16 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.quality_standards.schemas import (
-    ActionRequest,
     CopyStandardRequest,
-    NewRevisionCreate,
-    RejectRequest,
     RevisionUpdate,
     StandardCreate,
+    StandardStatusUpdate,
 )
 from app.modules.master_data.quality_standards.service import (
     check_duplicate_code,
     current_revision_row,
-    get_revision,
     get_standard,
     load_characteristics,
     replace_characteristics,
@@ -47,26 +45,15 @@ def statistics():
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         cur.execute(f"""
-            SELECT
-              COUNT(*) total_standards,
-              SUM(cr.status='ACTIVE') active,
-              SUM(cr.status='PENDING_APPROVAL') pending_approval,
-              SUM(cr.status='OBSOLETE') obsolete
+            SELECT COUNT(*) total_standards,
+                   SUM(cr.status='ACTIVE') active,
+                   SUM(cr.status<>'ACTIVE') inactive,
+                   COUNT(DISTINCT cr.product_id) products_covered
             FROM quality_standards s
             JOIN quality_standard_revisions cr ON cr.id = {_CURRENT_REVISION_ID_SUBQUERY}
         """)
         row = cur.fetchone()
-        stats = {key: int(value) if value is not None else 0 for key, value in row.items()}
-        # A "new revision in progress" is a later revision (no. > 1) still being drafted/reviewed
-        # for a standard whose currently-published revision is a different (earlier) row — the
-        # current-revision join above always resolves to the ACTIVE row when one exists, so it
-        # can never see this in-progress draft; it has to be counted independently.
-        cur.execute("""
-            SELECT COUNT(DISTINCT standard_id) total FROM quality_standard_revisions
-            WHERE status IN ('DRAFT','PENDING_APPROVAL') AND revision_no > 1
-        """)
-        stats["new_revision_in_progress"] = cur.fetchone()["total"]
-        return stats
+        return {key: int(value) if value is not None else 0 for key, value in row.items()}
     finally:
         cur.close(); conn.close()
 
@@ -138,6 +125,9 @@ def standard_detail(standard_id: int, revision_id: int | None = None):
             if product:
                 revision = {**revision, **product}
         characteristics = load_characteristics(cur, revision["id"]) if revision else []
+        if revision:
+            revision = attach_employee_names(cur, [revision], ["created_by", "updated_by", "submitted_by", "approved_by"])[0]
+        standard = attach_employee_names(cur, [standard], ["created_by", "updated_by"])[0]
         return {**standard, "revisions": revisions, "revision": revision, "characteristics": characteristics}
     finally:
         cur.close(); conn.close()
@@ -152,9 +142,51 @@ def audit_log(standard_id: int):
             "SELECT * FROM quality_standard_audit_log WHERE standard_id=%s ORDER BY acted_at DESC, id DESC",
             (standard_id,),
         )
-        return cur.fetchall()
+        return attach_employee_names(cur, cur.fetchall(), ["actor"])
     finally:
         cur.close(); conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Writes. A quality standard is configuration: it takes effect as soon as it is saved
+# (no submit / approve / activate). Its revisions are kept only so that inspection results
+# stay tied to the limits they were measured against: editing a revision that inspections
+# already use creates the next revision automatically and retires the old one.
+# ---------------------------------------------------------------------------
+
+_CHAR_INSERT = """INSERT INTO quality_standard_characteristics
+    (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
+     equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
+     cpk_target, is_critical, sort_order, created_by)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+
+
+def _copy_characteristics(cur, source_revision_id: int, target_revision_id: int, actor):
+    rows = load_characteristics(cur, source_revision_id)
+    if rows:
+        cur.executemany(_CHAR_INSERT, [
+            (target_revision_id, c["characteristic_name"], c["nominal_value"], c["lsl"], c["usl"], c["unit"],
+             c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["characteristic_type"],
+             c["is_spc"], c["chart_type"], c["subgroup_size"], c["cpk_target"], c["is_critical"], c["sort_order"], actor)
+            for c in rows
+        ])
+
+
+def _revision_in_use(cur, revision_id: int) -> int:
+    cur.execute("SELECT COUNT(*) total FROM quality_inspection_plans WHERE standard_revision_id=%s", (revision_id,))
+    return cur.fetchone()["total"]
+
+
+def _insert_revision(cur, standard_id: int, revision_no: int, data, status: str, actor):
+    cur.execute(
+        """INSERT INTO quality_standard_revisions
+           (standard_id, revision_no, standard_name, product_id, customer, process,
+            effective_date, remark, status, created_by)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (standard_id, revision_no, data["standard_name"], data["product_id"], data["customer"], data["process"],
+         data["effective_date"], data["remark"], status, actor),
+    )
+    return cur.lastrowid
 
 
 @router.post("/standards", status_code=201)
@@ -162,22 +194,11 @@ def create_standard(payload: StandardCreate):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         check_duplicate_code(cur, payload.standard_code)
-        cur.execute(
-            "INSERT INTO quality_standards (standard_code, created_by) VALUES (%s,%s)",
-            (payload.standard_code, payload.created_by),
-        )
+        cur.execute("INSERT INTO quality_standards (standard_code, created_by) VALUES (%s,%s)", (payload.standard_code, payload.created_by))
         standard_id = cur.lastrowid
-        cur.execute(
-            """INSERT INTO quality_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, customer, process,
-                effective_date, remark, status, created_by)
-               VALUES (%s,1,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (standard_id, payload.standard_name, payload.product_id, payload.customer, payload.process,
-             payload.effective_date, payload.remark, payload.created_by),
-        )
-        revision_id = cur.lastrowid
+        revision_id = _insert_revision(cur, standard_id, 1, payload.model_dump(), "ACTIVE", payload.created_by)
         replace_characteristics(cur, revision_id, payload.characteristics, payload.created_by)
-        write_audit(cur, standard_id, revision_id, "CREATE", None, "DRAFT", payload.created_by)
+        write_audit(cur, standard_id, revision_id, "CREATE", None, "ACTIVE", payload.created_by)
         conn.commit()
         return {"message": "Quality standard created successfully.", "id": standard_id, "revision_id": revision_id}
     except HTTPException:
@@ -188,28 +209,39 @@ def create_standard(payload: StandardCreate):
         cur.close(); conn.close()
 
 
-@router.put("/standards/{standard_id}/revisions/{revision_id}")
-def update_revision(standard_id: int, revision_id: int, payload: RevisionUpdate):
+@router.put("/standards/{standard_id}")
+def update_standard(standard_id: int, payload: RevisionUpdate):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only a Draft revision can be edited. Create a new revision instead.")
+        current = current_revision_row(cur, standard_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="Revision not found.")
+        if current["version"] != payload.version:
+            raise HTTPException(status_code=409, detail="This standard was changed by another user. Reload and try again.")
+        if _revision_in_use(cur, current["id"]):
+            # inspections already measured against these limits: keep them, continue on a new revision
+            cur.execute("SELECT COALESCE(MAX(revision_no),0) max_no FROM quality_standard_revisions WHERE standard_id=%s", (standard_id,))
+            next_no = cur.fetchone()["max_no"] + 1
+            new_id = _insert_revision(cur, standard_id, next_no, payload.model_dump(), current["status"], payload.updated_by)
+            replace_characteristics(cur, new_id, payload.characteristics, payload.updated_by)
+            cur.execute("UPDATE quality_standard_revisions SET status='OBSOLETE', version=version+1 WHERE id=%s", (current["id"],))
+            write_audit(cur, standard_id, new_id, "NEW_REVISION", current["status"], current["status"], payload.updated_by,
+                        remark=f"Revision {current['revision_no']} is used by inspections; changes saved as revision {next_no}")
+            conn.commit()
+            return {"message": f"Saved as revision {next_no} (revision {current['revision_no']} is used by inspections).", "revision_id": new_id}
         cur.execute(
             """UPDATE quality_standard_revisions
                SET standard_name=%s, product_id=%s, customer=%s, process=%s, effective_date=%s,
                    remark=%s, updated_by=%s, version=version+1
-               WHERE id=%s AND version=%s""",
+               WHERE id=%s""",
             (payload.standard_name, payload.product_id, payload.customer, payload.process,
-             payload.effective_date, payload.remark, payload.updated_by, revision_id, payload.version),
+             payload.effective_date, payload.remark, payload.updated_by, current["id"]),
         )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=409, detail="This revision was changed by another user. Reload and try again.")
-        replace_characteristics(cur, revision_id, payload.characteristics, payload.updated_by)
-        write_audit(cur, standard_id, revision_id, "UPDATE", "DRAFT", "DRAFT", payload.updated_by)
+        replace_characteristics(cur, current["id"], payload.characteristics, payload.updated_by)
+        write_audit(cur, standard_id, current["id"], "UPDATE", current["status"], current["status"], payload.updated_by)
         conn.commit()
-        return {"message": "Revision updated successfully.", "version": payload.version + 1}
+        return {"message": "Quality standard updated successfully.", "revision_id": current["id"]}
     except HTTPException:
         conn.rollback(); raise
     except Exception as exc:
@@ -218,182 +250,20 @@ def update_revision(standard_id: int, revision_id: int, payload: RevisionUpdate)
         cur.close(); conn.close()
 
 
-@router.post("/standards/{standard_id}/revisions", status_code=201)
-def create_new_revision(standard_id: int, payload: NewRevisionCreate):
+@router.patch("/standards/{standard_id}/status")
+def set_standard_status(standard_id: int, payload: StandardStatusUpdate):
+    """Active ↔ inactive (stored as ACTIVE / OBSOLETE on the current revision)."""
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        source = get_revision(cur, payload.source_revision_id, standard_id)
-        cur.execute(
-            "SELECT COUNT(*) total FROM quality_standard_revisions WHERE standard_id=%s AND status IN ('DRAFT','PENDING_APPROVAL')",
-            (standard_id,),
-        )
-        if cur.fetchone()["total"]:
-            raise HTTPException(status_code=409, detail="This standard already has an open Draft or Pending Approval revision.")
-        cur.execute("SELECT COALESCE(MAX(revision_no),0) AS max_no FROM quality_standard_revisions WHERE standard_id=%s", (standard_id,))
-        next_no = cur.fetchone()["max_no"] + 1
-        cur.execute(
-            """INSERT INTO quality_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, customer, process,
-                effective_date, remark, status, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (standard_id, next_no, source["standard_name"], source["product_id"], source["customer"],
-             source["process"], source["effective_date"], source["remark"], payload.created_by),
-        )
-        new_revision_id = cur.lastrowid
-        characteristics = load_characteristics(cur, source["id"])
-        cur.executemany(
-            """INSERT INTO quality_standard_characteristics
-               (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
-                equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
-                cpk_target, is_critical, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            [
-                (new_revision_id, c["characteristic_name"], c["nominal_value"], c["lsl"], c["usl"], c["unit"],
-                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["characteristic_type"],
-                 c["is_spc"], c["chart_type"], c["subgroup_size"], c["cpk_target"], c["is_critical"], c["sort_order"],
-                 payload.created_by)
-                for c in characteristics
-            ],
-        ) if characteristics else None
-        write_audit(cur, standard_id, new_revision_id, "NEW_REVISION", source["status"], "DRAFT", payload.created_by,
-                    remark=f"Copied from revision {source['revision_no']}")
+        current = current_revision_row(cur, standard_id)
+        target = "ACTIVE" if payload.status == "ACTIVE" else "OBSOLETE"
+        if current["status"] != target:
+            cur.execute("UPDATE quality_standard_revisions SET status=%s, updated_by=%s, version=version+1 WHERE id=%s",
+                        (target, payload.actor, current["id"]))
+            write_audit(cur, standard_id, current["id"], "ACTIVATE" if target == "ACTIVE" else "OBSOLETE", current["status"], target, payload.actor)
         conn.commit()
-        return {"message": "New revision created successfully.", "id": new_revision_id, "revision_no": next_no}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/submit")
-def submit_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only a Draft revision can be submitted for approval.")
-        cur.execute("SELECT COUNT(*) total FROM quality_standard_characteristics WHERE revision_id=%s", (revision_id,))
-        if not cur.fetchone()["total"]:
-            raise HTTPException(status_code=400, detail="Add at least one inspection characteristic before submitting.")
-        cur.execute(
-            """UPDATE quality_standard_revisions
-               SET status='PENDING_APPROVAL', submitted_by=%s, submitted_at=NOW(), version=version+1
-               WHERE id=%s""",
-            (payload.actor, revision_id),
-        )
-        write_audit(cur, standard_id, revision_id, "SUBMIT", "DRAFT", "PENDING_APPROVAL", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Submitted for approval."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/approve")
-def approve_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only a revision Pending Approval can be approved.")
-        cur.execute(
-            """UPDATE quality_standard_revisions
-               SET status='APPROVED', approved_by=%s, approved_at=NOW(), version=version+1
-               WHERE id=%s""",
-            (payload.actor, revision_id),
-        )
-        write_audit(cur, standard_id, revision_id, "APPROVE", "PENDING_APPROVAL", "APPROVED", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision approved."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/reject")
-def reject_revision(standard_id: int, revision_id: int, payload: RejectRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only a revision Pending Approval can be rejected.")
-        cur.execute(
-            "UPDATE quality_standard_revisions SET status='DRAFT', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "REJECT", "PENDING_APPROVAL", "DRAFT", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision rejected and returned to Draft."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/activate")
-def activate_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "APPROVED":
-            raise HTTPException(status_code=409, detail="Only an Approved revision can be activated.")
-        cur.execute(
-            "SELECT id FROM quality_standard_revisions WHERE standard_id=%s AND status='ACTIVE' AND id<>%s",
-            (standard_id, revision_id),
-        )
-        previously_active = cur.fetchall()
-        for row in previously_active:
-            cur.execute(
-                "UPDATE quality_standard_revisions SET status='OBSOLETE', version=version+1 WHERE id=%s",
-                (row["id"],),
-            )
-            write_audit(cur, standard_id, row["id"], "OBSOLETE", "ACTIVE", "OBSOLETE", payload.actor,
-                        remark=f"Superseded by revision {revision['revision_no']}")
-        cur.execute(
-            "UPDATE quality_standard_revisions SET status='ACTIVE', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "ACTIVATE", "APPROVED", "ACTIVE", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision activated."}
-    except HTTPException:
-        conn.rollback(); raise
-    except Exception as exc:
-        conn.rollback(); _db_error(exc)
-    finally:
-        cur.close(); conn.close()
-
-
-@router.post("/standards/{standard_id}/revisions/{revision_id}/obsolete")
-def obsolete_revision(standard_id: int, revision_id: int, payload: ActionRequest):
-    conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
-    try:
-        get_standard(cur, standard_id)
-        revision = get_revision(cur, revision_id, standard_id)
-        if revision["status"] != "ACTIVE":
-            raise HTTPException(status_code=409, detail="Only an Active revision can be made Obsolete.")
-        cur.execute(
-            "UPDATE quality_standard_revisions SET status='OBSOLETE', version=version+1 WHERE id=%s",
-            (revision_id,),
-        )
-        write_audit(cur, standard_id, revision_id, "OBSOLETE", "ACTIVE", "OBSOLETE", payload.actor, payload.remark)
-        conn.commit()
-        return {"message": "Revision marked Obsolete."}
+        return {"message": "Status updated."}
     except HTTPException:
         conn.rollback(); raise
     except Exception as exc:
@@ -411,37 +281,11 @@ def copy_standard(standard_id: int, payload: CopyStandardRequest):
         if not source:
             raise HTTPException(status_code=400, detail="Source standard has no revision to copy.")
         check_duplicate_code(cur, payload.new_standard_code)
-        cur.execute(
-            "INSERT INTO quality_standards (standard_code, created_by) VALUES (%s,%s)",
-            (payload.new_standard_code, payload.created_by),
-        )
+        cur.execute("INSERT INTO quality_standards (standard_code, created_by) VALUES (%s,%s)", (payload.new_standard_code, payload.created_by))
         new_standard_id = cur.lastrowid
-        cur.execute(
-            """INSERT INTO quality_standard_revisions
-               (standard_id, revision_no, standard_name, product_id, customer, process,
-                effective_date, remark, status, created_by)
-               VALUES (%s,1,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
-            (new_standard_id, source["standard_name"], source["product_id"], source["customer"],
-             source["process"], source["effective_date"], source["remark"], payload.created_by),
-        )
-        new_revision_id = cur.lastrowid
-        characteristics = load_characteristics(cur, source["id"])
-        cur.executemany(
-            """INSERT INTO quality_standard_characteristics
-               (revision_id, characteristic_name, nominal_value, lsl, usl, unit, inspection_method,
-                equipment_type_id, inspection_frequency, characteristic_type, is_spc, chart_type, subgroup_size,
-                cpk_target, is_critical, sort_order, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            [
-                (new_revision_id, c["characteristic_name"], c["nominal_value"], c["lsl"], c["usl"], c["unit"],
-                 c["inspection_method"], c["equipment_type_id"], c["inspection_frequency"], c["characteristic_type"],
-                 c["is_spc"], c["chart_type"], c["subgroup_size"], c["cpk_target"], c["is_critical"], c["sort_order"],
-                 payload.created_by)
-                for c in characteristics
-            ],
-        ) if characteristics else None
-        write_audit(cur, new_standard_id, new_revision_id, "CREATE", None, "DRAFT", payload.created_by,
-                    remark=f"Copied from standard {standard_id}")
+        new_revision_id = _insert_revision(cur, new_standard_id, 1, source, "ACTIVE", payload.created_by)
+        _copy_characteristics(cur, source["id"], new_revision_id, payload.created_by)
+        write_audit(cur, new_standard_id, new_revision_id, "CREATE", None, "ACTIVE", payload.created_by, remark=f"Copied from standard {standard_id}")
         conn.commit()
         return {"message": "Standard copied successfully.", "id": new_standard_id, "revision_id": new_revision_id}
     except HTTPException:
@@ -457,14 +301,12 @@ def delete_standard(standard_id: int):
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
         get_standard(cur, standard_id)
-        cur.execute("SELECT COUNT(*) total FROM quality_standard_revisions WHERE standard_id=%s", (standard_id,))
-        revision_count = cur.fetchone()["total"]
-        cur.execute("SELECT COUNT(*) total FROM quality_standard_audit_log WHERE standard_id=%s", (standard_id,))
-        audit_count = cur.fetchone()["total"]
-        cur.execute("SELECT status FROM quality_standard_revisions WHERE standard_id=%s", (standard_id,))
-        statuses = [row["status"] for row in cur.fetchall()]
-        if revision_count != 1 or statuses != ["DRAFT"] or audit_count > 1:
-            raise HTTPException(status_code=409, detail="This standard has activity; set it Obsolete instead of deleting.")
+        cur.execute("""SELECT COUNT(*) total FROM quality_inspection_plans p
+                       JOIN quality_standard_revisions r ON r.id=p.standard_revision_id WHERE r.standard_id=%s""", (standard_id,))
+        if cur.fetchone()["total"]:
+            raise HTTPException(status_code=409, detail="This standard is used by inspections; deactivate it instead of deleting.")
+        # revisions first (their FK is RESTRICT); characteristics cascade, audit rows follow the standard
+        cur.execute("DELETE FROM quality_standard_revisions WHERE standard_id=%s", (standard_id,))
         cur.execute("DELETE FROM quality_standards WHERE id=%s", (standard_id,))
         conn.commit()
         return {"message": "Quality standard deleted successfully."}

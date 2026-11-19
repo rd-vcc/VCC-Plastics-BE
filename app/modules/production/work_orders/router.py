@@ -1,4 +1,5 @@
 from collections import Counter
+from app.core.employee_names import attach_employee_names
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -6,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
+from app.modules.notifications import events
 from app.modules.production.work_orders.service import (
     OPEN,
     PRIORITIES,
@@ -179,7 +181,7 @@ def detail(wo_id: int):
         wo = decorate(row, datetime.now(), load_shifts(cur))
         cur.execute("""SELECT action, from_status, to_status, actor, acted_at, remark FROM production_planning_audit_log
                        WHERE entity_type='WORK_ORDER' AND entity_id=%s ORDER BY acted_at DESC, id DESC""", (wo_id,))
-        history = cur.fetchall()
+        history = attach_employee_names(cur, cur.fetchall(), ["actor"])
         cur.execute(
             """SELECT r.id, r.status, r.required_qty, r.open_qty, r.adjustment_qty, m.material_code, m.material_name, m.unit,
                       COALESCE((SELECT SUM(a.reserved_qty + a.issued_qty - a.returned_qty - a.consumed_qty) FROM material_allocations a
@@ -201,12 +203,16 @@ def _write(fn):
 
 @router.post("/{wo_id}/release")
 def release_wo(wo_id: int, payload: ActionIn):
-    return _write(lambda cur: release(cur, wo_id, payload.actor, payload.version, payload.remark))
+    result = _write(lambda cur: release(cur, wo_id, payload.actor, payload.version, payload.remark))
+    events.wo_released([wo_id], payload.actor)
+    return result
 
 
 @router.post("/{wo_id}/hold")
 def hold_wo(wo_id: int, payload: ReasonIn):
-    return _write(lambda cur: hold(cur, wo_id, payload.reason.strip(), payload.actor, payload.version))
+    result = _write(lambda cur: hold(cur, wo_id, payload.reason.strip(), payload.actor, payload.version))
+    events.wo_on_hold(wo_id, payload.reason.strip(), payload.actor)
+    return result
 
 
 @router.post("/{wo_id}/resume")
@@ -226,7 +232,9 @@ def priority_wo(wo_id: int, payload: PriorityIn):
 
 @router.post("/{wo_id}/complete")
 def complete_wo(wo_id: int, payload: ReasonIn):
-    return _write(lambda cur: complete(cur, wo_id, payload.reason.strip(), payload.actor, payload.version))
+    result = _write(lambda cur: complete(cur, wo_id, payload.reason.strip(), payload.actor, payload.version))
+    events.wo_completed(wo_id, payload.actor)
+    return result
 
 
 @router.post("/{wo_id}/close")

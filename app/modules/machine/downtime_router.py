@@ -249,7 +249,11 @@ def report(p: ReportIn):
         if p.ended_at:
             ms.close_downtime(cur, downtime_id, p.actor, ended_at=p.ended_at, set_status=False)
         return {"message": "Downtime reported.", "id": downtime_id}
-    return _run_write(action)
+    result = _run_write(action)
+    if not p.ended_at:   # a stop still going on: the shift leader has to act
+        from app.modules.notifications import events
+        events.downtime_reported(result["id"], p.actor)
+    return result
 
 
 @router.post("/{downtime_id}/close")

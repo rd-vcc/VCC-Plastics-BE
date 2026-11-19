@@ -1,10 +1,13 @@
 from datetime import date, time
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-DAY_TYPES = {"HOLIDAY", "SPECIAL_DAY", "COMPANY_EVENT", "FACTORY_SHUTDOWN", "OVERTIME"}
+DAY_TYPES = {"HOLIDAY", "WEEKEND", "SPECIAL_DAY", "COMPANY_EVENT", "FACTORY_SHUTDOWN", "OVERTIME",
+             "OTHER_HOLIDAY", "OTHER_SPECIAL"}
+# User-defined day types: the base type decides day off vs special day, the name is free text.
+CUSTOM_DAY_TYPES = {"OTHER_HOLIDAY", "OTHER_SPECIAL"}
 STATUSES = {"ACTIVE", "INACTIVE"}
 
 
@@ -86,8 +89,19 @@ class CalendarDayCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     applicable_area_id: Optional[int] = Field(default=None, gt=0)
     description: Optional[str] = Field(default=None, max_length=500)
+    custom_type_name: Optional[str] = Field(default=None, max_length=100)
     status: str = "ACTIVE"
     created_by: Optional[str] = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def _custom_type(self):
+        if self.day_type in CUSTOM_DAY_TYPES:
+            self.custom_type_name = (self.custom_type_name or "").strip()
+            if not self.custom_type_name:
+                raise ValueError("Custom day type name is required.")
+        else:
+            self.custom_type_name = None
+        return self
 
     @field_validator("day_type")
     @classmethod
@@ -129,3 +143,28 @@ class CalendarDayStatusUpdate(BaseModel):
         if value not in STATUSES:
             raise ValueError(f"Status must be one of: {', '.join(sorted(STATUSES))}.")
         return value
+
+
+class PatternAssignmentCreate(BaseModel):
+    area_id: int = Field(gt=0)
+    shift_type: str = Field(min_length=1, max_length=100)
+    effective_from: date
+    effective_to: Optional[date] = None
+    remark: Optional[str] = Field(default=None, max_length=500)
+    created_by: Optional[str] = Field(default=None, max_length=100)
+
+    @field_validator("shift_type")
+    @classmethod
+    def _shift_type(cls, value: str):
+        return _required(value)
+
+    @model_validator(mode="after")
+    def _period(self):
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("End date cannot be before the start date.")
+        return self
+
+
+class PatternAssignmentUpdate(PatternAssignmentCreate):
+    updated_by: Optional[str] = Field(default=None, max_length=100)
+    created_by: Optional[str] = Field(default=None, exclude=True)

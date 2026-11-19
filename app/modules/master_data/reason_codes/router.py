@@ -3,8 +3,8 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.reason_codes.schemas import (
-    ActionRequest,
     CategoryCreate,
     CategoryStatusUpdate,
     CategoryUpdate,
@@ -12,7 +12,6 @@ from app.modules.master_data.reason_codes.schemas import (
     ReasonCodeCreate,
     ReasonCodeStatusUpdate,
     ReasonCodeUpdate,
-    RejectRequest,
 )
 from app.modules.master_data.reason_codes.service import (
     check_duplicate_category_code,
@@ -59,7 +58,10 @@ def _run_write(action):
 def statistics():
     conn = get_vcc_plastics_connection(); cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("SELECT COUNT(*) total, SUM(status='ACTIVE') active FROM reason_codes")
+        cur.execute(
+            """SELECT COUNT(*) total, SUM(status='ACTIVE') active, SUM(status='INACTIVE') inactive,
+                      SUM(impact_level='HIGH') high_impact, SUM(code_type='AUTO') auto_codes FROM reason_codes"""
+        )
         row = cur.fetchone()
         total_codes = int(row["total"] or 0)
         active_codes = int(row["active"] or 0)
@@ -79,6 +81,9 @@ def statistics():
             "category_count": category_count,
             "usage_percent": usage_percent,
             "recently_added": recently_added,
+            "inactive_codes": int(row["inactive"] or 0),
+            "high_impact_codes": int(row["high_impact"] or 0),
+            "auto_codes": int(row["auto_codes"] or 0),
         }
     finally:
         cur.close(); conn.close()
@@ -222,6 +227,7 @@ def reason_code_detail(reason_code_id: int):
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Reason code not found.")
+        attach_employee_names(cur, row, ["created_by", "updated_by", "submitted_by", "approved_by"])
         return row
     finally:
         cur.close(); conn.close()
@@ -236,7 +242,7 @@ def reason_code_audit_log(reason_code_id: int):
             "SELECT * FROM reason_code_audit_log WHERE reason_code_id=%s ORDER BY acted_at DESC, id DESC",
             (reason_code_id,),
         )
-        return cur.fetchall()
+        return attach_employee_names(cur, cur.fetchall(), ["actor"])
     finally:
         cur.close(); conn.close()
 
@@ -250,13 +256,13 @@ def create_reason_code(payload: ReasonCodeCreate):
             """INSERT INTO reason_codes
                (reason_code, reason_name, category_id, code_type, applicable_module, description,
                 impact_level, sort_order, status, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s)""",
             (payload.reason_code, payload.reason_name, payload.category_id, payload.code_type,
              payload.applicable_module, payload.description, payload.impact_level, payload.sort_order,
              payload.created_by),
         )
         reason_code_id = cur.lastrowid
-        write_audit(cur, reason_code_id, "CREATE", None, "DRAFT", payload.created_by)
+        write_audit(cur, reason_code_id, "CREATE", None, "ACTIVE", payload.created_by)
         return {"message": "Reason code created successfully.", "id": reason_code_id}
     return _run_write(action)
 
@@ -265,8 +271,6 @@ def create_reason_code(payload: ReasonCodeCreate):
 def update_reason_code(reason_code_id: int, payload: ReasonCodeUpdate):
     def action(cur):
         current = get_reason_code(cur, reason_code_id)
-        if current["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only reason codes in Draft status can be edited.")
         check_duplicate_reason_code(cur, payload.reason_code, reason_code_id)
         validate_active_category(cur, payload.category_id)
         cur.execute(
@@ -280,61 +284,8 @@ def update_reason_code(reason_code_id: int, payload: ReasonCodeUpdate):
         )
         if cur.rowcount == 0:
             raise HTTPException(status_code=409, detail="This reason code was changed by another user. Reload and try again.")
-        write_audit(cur, reason_code_id, "UPDATE", "DRAFT", "DRAFT", payload.updated_by)
+        write_audit(cur, reason_code_id, "UPDATE", current["status"], current["status"], payload.updated_by)
         return {"message": "Reason code updated successfully.", "version": payload.version + 1}
-    return _run_write(action)
-
-
-@router.post("/reason-codes/{reason_code_id}/submit")
-def submit_reason_code(reason_code_id: int, payload: ActionRequest):
-    def action(cur):
-        current = get_reason_code(cur, reason_code_id)
-        if current["status"] != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only reason codes in Draft status can be submitted for approval.")
-        cur.execute(
-            """UPDATE reason_codes SET status='PENDING_APPROVAL', submitted_by=%s, submitted_at=NOW(),
-               updated_by=%s, version=version+1 WHERE id=%s AND version=%s""",
-            (payload.actor, payload.actor, reason_code_id, payload.version),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=409, detail="This reason code was changed by another user. Reload and try again.")
-        write_audit(cur, reason_code_id, "SUBMIT", "DRAFT", "PENDING_APPROVAL", payload.actor, payload.remark)
-        return {"message": "Reason code submitted for approval.", "version": payload.version + 1}
-    return _run_write(action)
-
-
-@router.post("/reason-codes/{reason_code_id}/approve")
-def approve_reason_code(reason_code_id: int, payload: ActionRequest):
-    def action(cur):
-        current = get_reason_code(cur, reason_code_id)
-        if current["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only reason codes pending approval can be approved.")
-        cur.execute(
-            """UPDATE reason_codes SET status='ACTIVE', approved_by=%s, approved_at=NOW(),
-               updated_by=%s, version=version+1 WHERE id=%s AND version=%s""",
-            (payload.actor, payload.actor, reason_code_id, payload.version),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=409, detail="This reason code was changed by another user. Reload and try again.")
-        write_audit(cur, reason_code_id, "APPROVE", "PENDING_APPROVAL", "ACTIVE", payload.actor, payload.remark)
-        return {"message": "Reason code approved and released for use.", "version": payload.version + 1}
-    return _run_write(action)
-
-
-@router.post("/reason-codes/{reason_code_id}/reject")
-def reject_reason_code(reason_code_id: int, payload: RejectRequest):
-    def action(cur):
-        current = get_reason_code(cur, reason_code_id)
-        if current["status"] != "PENDING_APPROVAL":
-            raise HTTPException(status_code=409, detail="Only reason codes pending approval can be rejected.")
-        cur.execute(
-            "UPDATE reason_codes SET status='DRAFT', updated_by=%s, version=version+1 WHERE id=%s AND version=%s",
-            (payload.actor, reason_code_id, payload.version),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=409, detail="This reason code was changed by another user. Reload and try again.")
-        write_audit(cur, reason_code_id, "REJECT", "PENDING_APPROVAL", "DRAFT", payload.actor, payload.remark)
-        return {"message": "Reason code rejected and returned to Draft.", "version": payload.version + 1}
     return _run_write(action)
 
 
@@ -365,13 +316,13 @@ def copy_reason_code(reason_code_id: int, payload: CopyReasonCodeRequest):
             """INSERT INTO reason_codes
                (reason_code, reason_name, category_id, code_type, applicable_module, description,
                 impact_level, sort_order, status, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'ACTIVE',%s)""",
             (payload.new_reason_code, f"{source['reason_name']} (Copy)", source["category_id"],
              source["code_type"], source["applicable_module"], source["description"],
              source["impact_level"], source["sort_order"], payload.created_by),
         )
         new_id = cur.lastrowid
-        write_audit(cur, new_id, "CREATE", None, "DRAFT", payload.created_by, remark=f"Copied from reason code {reason_code_id}")
+        write_audit(cur, new_id, "CREATE", None, "ACTIVE", payload.created_by, remark=f"Copied from reason code {reason_code_id}")
         return {"message": "Reason code copied successfully.", "id": new_id}
     return _run_write(action)
 
@@ -379,10 +330,23 @@ def copy_reason_code(reason_code_id: int, payload: CopyReasonCodeRequest):
 @router.delete("/reason-codes/{reason_code_id}")
 def delete_reason_code(reason_code_id: int):
     def action(cur):
-        get_reason_code(cur, reason_code_id)
-        cur.execute("SELECT COUNT(*) total FROM reason_code_audit_log WHERE reason_code_id=%s", (reason_code_id,))
-        if cur.fetchone()["total"] > 1:
-            raise HTTPException(status_code=409, detail="This reason code has activity; set it Inactive instead of deleting.")
+        current = get_reason_code(cur, reason_code_id)
+        # Only operational records block deletion; edits of the master data itself do not.
+        usages = []
+        for table, label in (("downtime_events", "downtime events"), ("production_execution_logs", "production logs")):
+            try:
+                cur.execute(f"SELECT COUNT(*) total FROM {table} WHERE reason_code_id=%s", (reason_code_id,))
+            except Exception:  # table not present in this database
+                continue
+            total = cur.fetchone()["total"]
+            if total:
+                usages.append(f"{total} {label}")
+        if usages:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This reason code is used by {', '.join(usages)}; set it Inactive instead of deleting.",
+            )
         cur.execute("DELETE FROM reason_codes WHERE id=%s", (reason_code_id,))
+        write_audit(cur, reason_code_id, "DELETE", current["status"], None, None, f"Deleted {current['reason_code']}")
         return {"message": "Reason code deleted successfully."}
     return _run_write(action)

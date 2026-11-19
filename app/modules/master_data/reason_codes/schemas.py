@@ -137,18 +137,6 @@ class ReasonCodeStatusUpdate(BaseModel):
         return value
 
 
-class ActionRequest(BaseModel):
-    remark: Optional[str] = Field(default=None, max_length=500)
-    actor: Optional[str] = Field(default=None, max_length=100)
-    version: int = Field(ge=1)
-
-
-class RejectRequest(BaseModel):
-    remark: str = Field(min_length=1, max_length=500)
-    actor: Optional[str] = Field(default=None, max_length=100)
-    version: int = Field(ge=1)
-
-
 class CopyReasonCodeRequest(BaseModel):
     new_reason_code: str = Field(min_length=1, max_length=50)
     created_by: Optional[str] = Field(default=None, max_length=100)

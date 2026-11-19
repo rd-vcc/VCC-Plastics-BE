@@ -72,9 +72,9 @@ def write_history(cur, order_id: int, action: str, from_status, to_status, actor
 def sync_order_status(cur, order_id, actor="SYSTEM"):
     """Move an in-flight order along its lifecycle from the state of its Work Orders.
 
-    RELEASED -> SCHEDULING when a Work Order is scheduled, -> IN_PRODUCTION when a
-    Work Order is released to the shop floor or reports output, -> COMPLETED when good
-    pieces reach the order quantity. Draft / final orders are never touched here.
+    RELEASED -> SCHEDULING when a Work Order is scheduled or released to the shop floor,
+    -> IN_PRODUCTION only once a Work Order has actually started (or reported output),
+    -> COMPLETED when good pieces reach the order quantity. Draft / final orders are never touched here.
     """
     if not order_id:
         return
@@ -92,9 +92,9 @@ def sync_order_status(cur, order_id, actor="SYSTEM"):
     statuses = {w["status"] for w in work_orders}
     if good >= int(order["order_qty"]):
         target = "COMPLETED"
-    elif statuses & {"RELEASED", "IN_PRODUCTION", "ON_HOLD", "COMPLETED", "CLOSED"} or good > 0:
+    elif statuses & {"IN_PRODUCTION", "ON_HOLD", "COMPLETED", "CLOSED"} or good > 0:
         target = "IN_PRODUCTION"
-    elif "SCHEDULED" in statuses:
+    elif statuses & {"SCHEDULED", "RELEASED"}:
         target = "SCHEDULING"
     else:
         target = "RELEASED"

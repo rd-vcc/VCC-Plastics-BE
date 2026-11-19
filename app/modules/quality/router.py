@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.production.work_orders.router import _system_status
 from app.modules.production.work_orders.service import load_shifts
 from app.modules.quality import service as qs
@@ -486,7 +487,8 @@ def inspection_detail(plan_id: int):
         chars = qs.characteristics(cur, p["standard_revision_id"])
         cur.execute("SELECT id, ng_no, status, priority FROM quality_ng_records WHERE inspection_plan_id=%s", (plan_id,))
         ng = cur.fetchall()
-        return qs.spc_json({"plan": p, "characteristics": chars, "records": qs.plan_records(cur, plan_id), "events": qs.events(cur, "PLAN", plan_id),
+        records = attach_employee_names(cur, qs.plan_records(cur, plan_id), ["inspector"])  # shown as "Full name - code"
+        return qs.spc_json({"plan": p, "characteristics": chars, "records": records, "events": qs.events(cur, "PLAN", plan_id),
                             "ng": ng, "control": qs.targets(cur)["equipment_control"]})
     return _read(action)
 
@@ -574,6 +576,8 @@ def spc_overview(product_id: Optional[int] = None, work_order_id: Optional[int] 
             cur.execute("""SELECT m.material_code, m.material_name FROM boms b JOIN bom_items bi ON bi.bom_id=b.id JOIN materials m ON m.id=bi.material_id
                            WHERE b.product_id=%s ORDER BY bi.id LIMIT 1""", (pid,))
             material = cur.fetchone()
+        if wo:
+            attach_employee_names(cur, [wo], ["operator_code"])
         return qs.spc_json({"product": product, "revision": rev, "revisions": revisions, "work_order": wo, "material": material, "characteristics": chars,
                             "summary": {"total": len(chars), "monitored": len(monitored), "normal": sum(1 for c in chars if c["status"] == "NORMAL"),
                                         "warning": sum(1 for c in chars if c["status"] == "WARNING"),
@@ -609,6 +613,7 @@ def spc_detail(characteristic_id: int, product_id: Optional[int] = None, work_or
                     "gauge_name": r["gauge_name"], "position": r["position"] or f"Sample {r['sample_no']}", "result": r["result"], "remark": r["remark"],
                     "plan_no": r["plan_no"], "wo_no": r["wo_no"], "machine_code": r["machine_code"], "mold_code": r["mold_code"], "lot_no": r["lot_no"]}
                    for i, r in enumerate(shown)]
+        attach_employee_names(cur, history, ["inspector"])  # shown as "Full name - code"
         return qs.spc_json({**a, "history": history, "cpk_trend": spc.cpk_trend(c, rows)})
     return _read(action)
 
@@ -841,7 +846,7 @@ def equipment_page(type_id: Optional[int] = None, location: Optional[str] = None
 @router.get("/equipment/{equipment_id}")
 def equipment_detail(equipment_id: int):
     def action(cur):
-        e = qs.load_equipment(cur, equipment_id)
+        e = attach_employee_names(cur, [qs.load_equipment(cur, equipment_id)], ["owner_code"])[0]
         cur.execute("SELECT * FROM measuring_equipment_calibration_history WHERE equipment_id=%s ORDER BY calibration_date DESC, id DESC", (equipment_id,))
         history = cur.fetchall()
         cur.execute("SELECT * FROM quality_equipment_events WHERE equipment_id=%s ORDER BY event_at DESC, id DESC LIMIT 100", (equipment_id,))

@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.administration.audit import service as audit
 from app.modules.production.work_orders.router import _system_status
 from app.modules.reports import xlsx
@@ -32,6 +33,17 @@ def _run(action):
         conn.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         cur.close(); conn.close()
+
+
+def _with_user_label(cur, rows):
+    """Add `user_label` = "Full name - code" (the stored name or code when the employee is not in the directory)."""
+    attach_employee_names(cur, rows, ["user_code"])
+    for r in rows:
+        if r.get("user_code_name"):
+            r["user_label"] = f"{r['user_code_name']} - {r['user_code_code']}"
+        else:
+            r["user_label"] = r.get("user_name") or r.get("user_code") or None
+    return rows
 
 
 def _json(v):
@@ -83,7 +95,7 @@ def list_logs(date_from: Optional[date] = None, date_to: Optional[date] = None, 
         total = int(cur.fetchone()["n"])
         cur.execute(f"SELECT {LIST_COLS}, (before_json IS NOT NULL OR after_json IS NOT NULL) has_changes FROM audit_logs WHERE {where} ORDER BY event_at DESC, id DESC LIMIT %s",
                     (*params, min(max(limit, 1), 2000)))
-        return _json({"total": total, "items": cur.fetchall()})
+        return _json({"total": total, "items": _with_user_label(cur, cur.fetchall())})
     return _run(act)
 
 
@@ -112,15 +124,16 @@ def summary(date_from: Optional[date] = None, date_to: Optional[date] = None, us
                   "failed": int(by_day.get(start.date() + timedelta(days=i), {}).get("failed", 0) or 0)} for i in range(days)]
         cur.execute(f"SELECT module, COUNT(*) n FROM audit_logs WHERE {where} GROUP BY module ORDER BY n DESC", tuple(params))
         by_module = [[r["module"], int(r["n"])] for r in cur.fetchall()]
-        cur.execute(f"SELECT COALESCE(user_name, user_code, 'Unknown') u, MAX(user_code) code, COUNT(*) n FROM audit_logs WHERE {where} GROUP BY u ORDER BY n DESC LIMIT 5", tuple(params))
-        top_users = cur.fetchall()
+        cur.execute(f"""SELECT COALESCE(user_code, user_name, 'Unknown') user_code, MAX(user_name) user_name, MAX(user_code) code, COUNT(*) n FROM audit_logs WHERE {where}
+                        GROUP BY COALESCE(user_code, user_name, 'Unknown') ORDER BY n DESC LIMIT 5""", tuple(params))
+        top_users = [{**r, "u": r["user_label"]} for r in _with_user_label(cur, cur.fetchall())]
         cur.execute(f"SELECT severity, COUNT(*) n FROM audit_logs WHERE {where} GROUP BY severity", tuple(params))
         by_severity = {r["severity"]: int(r["n"]) for r in cur.fetchall()}
         cur.execute(f"SELECT action, COUNT(*) n FROM audit_logs WHERE {where} GROUP BY action ORDER BY n DESC", tuple(params))
         by_action = [[r["action"], int(r["n"])] for r in cur.fetchall()]
         # filter lists (whole table, not only the period)
         cur.execute("SELECT DISTINCT user_code, user_name FROM audit_logs WHERE user_code IS NOT NULL ORDER BY user_name LIMIT 500")
-        users = cur.fetchall()
+        users = list({r["user_code"]: r for r in _with_user_label(cur, cur.fetchall())}.values())
         cur.execute("SELECT DISTINCT module FROM audit_logs ORDER BY module")
         modules = [r["module"] for r in cur.fetchall()]
         cur.execute("SELECT DISTINCT action FROM audit_logs ORDER BY action")
@@ -169,9 +182,10 @@ def detail(log_id: int):
                     continue
                 if fb.get(key) != fa.get(key):
                     changes.append({"field": key, "before": fb.get(key), "after": fa.get(key)})
-        cur.execute("SELECT id, event_at, action, user_name, result FROM audit_logs WHERE record_id=%s AND data_type <=> %s AND id<>%s ORDER BY event_at DESC LIMIT 10",
+        cur.execute("SELECT id, event_at, action, user_code, user_name, result FROM audit_logs WHERE record_id=%s AND data_type <=> %s AND id<>%s ORDER BY event_at DESC LIMIT 10",
                     (row["record_id"], row["data_type"], log_id)) if row["record_id"] else None
-        related = cur.fetchall() if row["record_id"] else []
+        related = _with_user_label(cur, cur.fetchall()) if row["record_id"] else []
+        _with_user_label(cur, [row])
         return _json({**{k: v for k, v in row.items() if k not in ("before_json", "after_json", "request_json")}, "before": before, "after": after, "request": req,
                       "changes": changes[:200], "related": related})
     return _run(act)

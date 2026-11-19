@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.products.schemas import (
     ProductCreate,
     ProductFamilyCreate,
@@ -133,7 +134,7 @@ def list_families(
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY f.sort_order, f.family_name, f.id"
         cur.execute(sql, tuple(params))
-        rows = cur.fetchall()
+        rows = attach_employee_names(cur, cur.fetchall(), ["created_by", "updated_by"])
         return _tree(rows) if tree and not keyword else rows
     finally:
         cur.close()
@@ -604,6 +605,7 @@ def get_product_detail(product_id: int):
             _field_detail(cur, field)
             for field in get_applicable_fields(cur, product["product_family_id"])
         ]
+        attach_employee_names(cur, product, ["created_by", "updated_by"])
         return product
     finally:
         cur.close()

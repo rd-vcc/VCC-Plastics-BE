@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.database import get_vcc_plastics_connection
+from app.core.employee_names import attach_employee_names
 from app.modules.master_data.molds.schemas import (
     MoldAttributeDefinitionCreate, MoldAttributeDefinitionUpdate,
     MoldAttributeValuesReplace, MoldCreate, MoldNodeCreate, MoldNodeMove,
@@ -172,7 +173,7 @@ def list_nodes(keyword: str | None=None, node_type_id: int | None=None,
                FROM mold_location_nodes n JOIN mold_location_node_types t ON t.id=n.node_type_id"""
         if conditions: sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY n.level_no,n.sort_order,n.node_name,n.id"
-        cur.execute(sql,tuple(params)); rows=cur.fetchall()
+        cur.execute(sql,tuple(params)); rows=attach_employee_names(cur,cur.fetchall(),["created_by","updated_by"])
         return _tree(rows) if tree and not keyword and parent_id is None else rows
     finally: cur.close(); conn.close()
 
@@ -236,7 +237,7 @@ def node_status(node_id:int,payload:StatusUpdate):
     current=node_detail(node_id)
     return update_node(node_id,MoldNodeUpdate(node_name=current["node_name"],node_type_id=current["node_type_id"],
         parent_id=current["parent_id"],sort_order=current["sort_order"],description=current["description"],
-        status=payload.status,updated_by=payload.updated_by))
+        status=payload.status,capacity=current.get("capacity"),updated_by=payload.updated_by))
 
 
 @router.delete("/location-nodes/{node_id}")
@@ -383,7 +384,7 @@ def list_molds(keyword:str|None=None,status:str|None=None,mold_type:str|None=Non
 @router.get("/molds/{mold_id}")
 def mold_detail(mold_id:int):
     conn=get_vcc_plastics_connection();cur=conn.cursor(dictionary=True)
-    try:return _mold_detail(cur,mold_id)
+    try:return attach_employee_names(cur,_mold_detail(cur,mold_id),["created_by","updated_by"])[0]
     finally:cur.close();conn.close()
 
 
@@ -398,11 +399,14 @@ def _write_mold(cur,payload,mold_id:int|None=None):
           description,remark,is_active,revision,pm_interval_shot,pm_interval_days,status_since,location_since,created_by)
           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),%s)""",
           (payload.mold_code,)+values+(payload.created_by,));return cur.lastrowid
-    cur.execute("""UPDATE molds SET mold_name=%s,mold_type=%s,mold_group=%s,cavity_count=%s,status=%s,current_location_id=%s,
-      design_shot=%s,current_shot=%s,weight_kg=%s,length_mm=%s,width_mm=%s,height_mm=%s,manufacturer=%s,
+    # status and current_shot are live data owned by Mold Management (install / remove, shot counting,
+    # maintenance) and logged in mold_events, so the master data edit leaves them untouched.
+    edit_values=values[:4]+values[5:7]+values[8:]
+    cur.execute("""UPDATE molds SET mold_name=%s,mold_type=%s,mold_group=%s,cavity_count=%s,current_location_id=%s,
+      design_shot=%s,weight_kg=%s,length_mm=%s,width_mm=%s,height_mm=%s,manufacturer=%s,
       manufacture_date=%s,image_url=%s,description=%s,remark=%s,is_active=%s,revision=%s,pm_interval_shot=%s,pm_interval_days=%s,
       updated_by=%s WHERE id=%s""",
-      values+(payload.updated_by,mold_id));return mold_id
+      edit_values+(payload.updated_by,mold_id));return mold_id
 
 
 def _guard_status(before,status):
@@ -448,7 +452,6 @@ def update_mold(mold_id:int,payload:MoldUpdate):
         get_mold(cur,mold_id)
         cur.execute("SELECT status,current_location_id,current_shot,current_machine_id FROM molds WHERE id=%s FOR UPDATE",(mold_id,));before=cur.fetchone()
         if payload.current_location_id:get_node(cur,payload.current_location_id,True)
-        if payload.status!=before["status"]:_guard_status(before,payload.status)
         _write_mold(cur,payload,mold_id);_log_master_changes(cur,before,mold_id,payload.updated_by)
         replace_attribute_values(cur,mold_id,payload.attribute_values,payload.updated_by)
         replace_products(cur,mold_id,payload.products,payload.updated_by);conn.commit();return {"message":"Mold updated successfully."}

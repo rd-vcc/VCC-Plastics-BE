@@ -99,7 +99,34 @@ def _intervals_overlap(a_intervals, b_intervals) -> bool:
     return False
 
 
-def check_shift_overlap(cur, applicable_area_id, start_time, end_time, allow_overlap: bool, exclude_id: int | None = None):
+def node_ancestors(cur, node_id) -> list:
+    """[node_id, parent_id, grand_parent_id, ...] up to the root of the factory structure."""
+    if node_id is None:
+        return []
+    cur.execute("SELECT id, parent_id FROM factory_structure_nodes")
+    parents = {row["id"]: row["parent_id"] for row in cur.fetchall()}
+    chain, current = [], int(node_id)
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = parents.get(current)
+    return chain
+
+
+def _same_branch(cur, area_a, area_b) -> bool:
+    """True when one area contains the other (or either one is company-wide)."""
+    if area_a is None or area_b is None or area_a == area_b:
+        return True
+    return area_a in node_ancestors(cur, area_b) or area_b in node_ancestors(cur, area_a)
+
+
+def _pattern_key(value) -> str:
+    return (value or "").strip().lower()
+
+
+def check_shift_overlap(cur, applicable_area_id, start_time, end_time, allow_overlap: bool,
+                        exclude_id: int | None = None, shift_type: str | None = None):
+    """Shifts of the same shift pattern (shift_type) must not overlap on the same branch of the
+    factory structure. Different patterns are alternatives, an area runs only one of them."""
     if allow_overlap:
         return
     new_intervals = _intervals_for(_to_minutes(start_time), _to_minutes(end_time))
@@ -112,18 +139,15 @@ def check_shift_overlap(cur, applicable_area_id, start_time, end_time, allow_ove
     for candidate in cur.fetchall():
         if candidate["allow_overlap"]:
             continue
-        same_area = (
-            applicable_area_id is None
-            or candidate["applicable_area_id"] is None
-            or candidate["applicable_area_id"] == applicable_area_id
-        )
-        if not same_area:
+        if _pattern_key(candidate["shift_type"]) != _pattern_key(shift_type):
+            continue
+        if not _same_branch(cur, applicable_area_id, candidate["applicable_area_id"]):
             continue
         candidate_intervals = _intervals_for(_to_minutes(candidate["start_time"]), _to_minutes(candidate["end_time"]))
         if _intervals_overlap(new_intervals, candidate_intervals):
             raise HTTPException(
                 status_code=409,
-                detail=f"This shift overlaps with existing shift {candidate['shift_code']} in the same area.",
+                detail=f"This shift overlaps with existing shift {candidate['shift_code']} of the same shift pattern in the same area.",
             )
 
 
@@ -153,3 +177,59 @@ def write_audit(cur, entity_type: str, entity_id: int, action: str, from_status,
            VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (entity_type, entity_id, action, from_status, to_status, actor or "SYSTEM", remark),
     )
+
+
+# =========================================================
+# SHIFT PATTERN ASSIGNMENTS (area -> shift pattern)
+# =========================================================
+
+
+def resolve_area_pattern(cur, area_id, on_date):
+    """Shift pattern valid for an area on a date: its own assignment, else the nearest parent's."""
+    for level, node_id in enumerate(node_ancestors(cur, area_id)):
+        cur.execute(
+            """SELECT a.*, n.name AS area_name FROM shift_pattern_assignments a
+               JOIN factory_structure_nodes n ON n.id = a.area_id
+               WHERE a.area_id=%s AND a.effective_from<=%s AND (a.effective_to IS NULL OR a.effective_to>=%s)
+               ORDER BY a.effective_from DESC LIMIT 1""",
+            (node_id, on_date, on_date),
+        )
+        row = cur.fetchone()
+        if row:
+            row["inherited"] = level > 0
+            return row
+    return None
+
+
+def check_assignment_period(cur, area_id, effective_from, effective_to, exclude_id=None):
+    """One area cannot have two pattern assignments valid on the same day."""
+    sql = """SELECT id, shift_type, effective_from, effective_to FROM shift_pattern_assignments
+             WHERE area_id=%s AND (effective_to IS NULL OR effective_to>=%s)"""
+    params = [area_id, effective_from]
+    if effective_to is not None:
+        sql += " AND effective_from<=%s"
+        params.append(effective_to)
+    if exclude_id is not None:
+        sql += " AND id<>%s"
+        params.append(exclude_id)
+    cur.execute(sql, tuple(params))
+    clash = cur.fetchone()
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"This area already runs '{clash['shift_type']}' from {clash['effective_from']}"
+                    f"{' to ' + str(clash['effective_to']) if clash['effective_to'] else ''}. "
+                    "Close that assignment (end date) before adding a new one."),
+        )
+
+
+def check_pattern_exists(cur, shift_type):
+    cur.execute("SELECT COUNT(*) AS total FROM shifts WHERE status='ACTIVE' AND LOWER(TRIM(shift_type))=%s",
+                (_pattern_key(shift_type),))
+    if not cur.fetchone()["total"]:
+        raise HTTPException(status_code=400, detail="Shift pattern has no active shifts.")
+
+
+def shift_covers(shift, minute_of_day: int) -> bool:
+    start, end = _to_minutes(shift["start_time"]), _to_minutes(shift["end_time"])
+    return any(a <= minute_of_day < b for a, b in _intervals_for(start, end))

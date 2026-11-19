@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.database import get_vcc_plastics_connection
 from app.modules.maintenance import service as ms
+from app.modules.notifications import events
 from app.modules.mold import service as mold_service
 from app.modules.production.work_orders.router import _system_status
 
@@ -320,7 +321,9 @@ def create_request(p: RequestIn):
     def action(cur):
         rid = ms.create_request(cur, p.model_dump(), p.actor, source=(p.source or "MANUAL").upper())
         return {"message": "Request created.", "id": rid}
-    return _write(action)
+    result = _write(action)
+    events.maint_requested(result["id"], p.actor)
+    return result
 
 
 @router.put("/requests/{request_id}")
@@ -357,7 +360,9 @@ def attachment_delete(owner: str, owner_id: int, att_id: int):
 
 @router.post("/requests/{request_id}/work-order")
 def request_work_order(request_id: int, p: WoCreateIn):
-    return _write(lambda cur: {"message": "Work order created.", "id": ms.wo_from_request(cur, request_id, p.model_dump(), p.actor)})
+    result = _write(lambda cur: {"message": "Work order created.", "id": ms.wo_from_request(cur, request_id, p.model_dump(), p.actor)})
+    events.maint_wo_created(result["id"], p.actor)
+    return result
 
 
 @router.post("/requests/{request_id}/{req_action}")
@@ -477,7 +482,9 @@ def duplicate_plan(plan_id: int, p: ActionIn):
 
 @router.post("/plans/{plan_id}/work-order")
 def plan_work_order(plan_id: int, p: WoCreateIn):
-    return _write(lambda cur: {"message": "Work order created.", "id": ms.wo_from_plan(cur, plan_id, p.model_dump(), p.actor)})
+    result = _write(lambda cur: {"message": "Work order created.", "id": ms.wo_from_plan(cur, plan_id, p.model_dump(), p.actor)})
+    events.maint_wo_created(result["id"], p.actor)
+    return result
 
 
 # ---------------------------------------------------------------- work orders
@@ -592,7 +599,9 @@ def create_wo(p: WoCreateIn):
         if not p.asset_type or not p.asset_id or not (p.task_name or "").strip():
             raise HTTPException(status_code=400, detail="Asset and task are required.")
         return {"message": "Work order created.", "id": ms.create_wo(cur, p.model_dump(), p.actor)}
-    return _write(action)
+    result = _write(action)
+    events.maint_wo_created(result["id"], p.actor)
+    return result
 
 
 @router.put("/work-orders/{wo_id}")
@@ -642,4 +651,6 @@ def component_set(wo_id: int, component: str, p: ComponentIn):
 
 @router.post("/work-orders/{wo_id}/{wo_action}")
 def wo_action(wo_id: int, wo_action: str, p: ActionIn):
-    return _write(lambda cur: (ms.wo_action(cur, wo_id, wo_action, p.actor, p.note, p.version, p.technician, p.stage), {"message": "Work order updated."})[1])
+    result = _write(lambda cur: (ms.wo_action(cur, wo_id, wo_action, p.actor, p.note, p.version, p.technician, p.stage), {"message": "Work order updated."})[1])
+    events.maint_wo_action(wo_id, wo_action, p.actor)
+    return result

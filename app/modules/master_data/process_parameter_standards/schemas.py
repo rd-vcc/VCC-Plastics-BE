@@ -100,18 +100,8 @@ class RevisionUpdate(BaseModel):
         return _check_no_duplicate_parameters(value)
 
 
-class NewRevisionCreate(BaseModel):
-    source_revision_id: int = Field(gt=0)
-    created_by: Optional[str] = Field(default=None, max_length=100)
-
-
-class ActionRequest(BaseModel):
-    remark: Optional[str] = Field(default=None, max_length=500)
-    actor: Optional[str] = Field(default=None, max_length=100)
-
-
-class RejectRequest(BaseModel):
-    remark: str = Field(min_length=1, max_length=500)
+class StandardStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(ACTIVE|INACTIVE)$")
     actor: Optional[str] = Field(default=None, max_length=100)
 
 
