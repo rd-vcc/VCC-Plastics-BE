@@ -9,6 +9,7 @@ __pycache__/
 .env.local
 
 logs/*.log
+logs/*.txt
 storage/uploads/*
 storage/exports/*
 storage/temp/*
